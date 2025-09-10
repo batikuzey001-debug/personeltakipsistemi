@@ -7,3 +7,4 @@ pydantic-settings
 passlib[bcrypt]
 python-jose[cryptography]
 python-dateutil
+email-validator
