@@ -1,13 +1,16 @@
+// apps/admin/src/App.tsx
 import { Routes, Route, Navigate } from "react-router-dom";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Employees from "./pages/Employees";
 import KPIs from "./pages/KPIs";
 import Scores from "./pages/Scores";
+import Users from "./pages/Users";            // Super Admin için kullanıcı yönetimi
 import Layout from "./components/Layout";
 import { RequireRole } from "./lib/auth";
 
 function Protected({ children }: { children: React.ReactNode }) {
+  // Neden: V1'de sadece super_admin tüm sayfalara erişsin; sonra rol bazlı genişleteceğiz.
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
 }
 
@@ -55,6 +58,17 @@ export default function App() {
           <Protected>
             <Layout>
               <Scores />
+            </Layout>
+          </Protected>
+        }
+      />
+
+      <Route
+        path="/users"
+        element={
+          <Protected>
+            <Layout>
+              <Users />
             </Layout>
           </Protected>
         }
