@@ -14,7 +14,6 @@ export default function Sidebar() {
     { to: "/kpis", label: "KPI'lar" },
     { to: "/scores", label: "Skorlar" }
   ];
-
   return (
     <aside style={{ width: 220, borderRight: "1px solid #eee", padding: 12 }}>
       <nav>
