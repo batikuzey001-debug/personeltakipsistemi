@@ -8,14 +8,13 @@ from app.db.session import engine
 
 from app.api.routes_auth import router as auth_router
 from app.api.routes_org import router as org_router
-from app.api.route_seed import router as seed_router  # tek seferlik kurulum için
+from app.api.route_seed import router as seed_router
+from app.api.routes_users import router as users_router  # <- EKLENDİ
 
-# V1: hızlı başlat; prod'da Alembic kullanılacak
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.APP_NAME)
 
-# CORS: V1 açık; prod’da panel domain ile sınırla
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,7 +27,7 @@ app.add_middleware(
 def healthz():
     return {"ok": True}
 
-# Router'lar
 app.include_router(auth_router)
 app.include_router(org_router)
 app.include_router(seed_router)
+app.include_router(users_router)  # <- EKLENDİ
