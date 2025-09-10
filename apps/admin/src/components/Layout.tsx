@@ -1,12 +1,9 @@
+import React from "react";
 import { useAuth } from "../lib/auth";
+import Sidebar from "./Sidebar";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { auth, logout } = useAuth();
-
-  function handleLogout() {
-    logout();                 // token'ı temizle
-    window.location.href = "/login"; // güvenli yönlendirme
-  }
 
   const brand = (import.meta as any).env?.VITE_PANEL_BRAND_NAME || "Personel Panel";
 
@@ -17,13 +14,18 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <span style={{ marginRight: 12, fontSize: 12, opacity: 0.7 }}>
           Rol: {auth.role ?? "-"} • {auth.email ?? "-"}
         </span>
-        <button onClick={handleLogout}>Çıkış</button>
+        <button
+          onClick={() => {
+            logout();
+            window.location.href = "/login";
+          }}
+        >
+          Çıkış
+        </button>
       </header>
+
       <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", height: "100%" }}>
-        {/* Sidebar ayrı dosyadaysa import dizinini kontrol et */}
-        {/* @ts-ignore */}
-        { /* eslint-disable-next-line */ }
-        {React.createElement(require("../components/Sidebar").default)}
+        <Sidebar />
         <main style={{ padding: 16 }}>{children}</main>
       </div>
     </div>
