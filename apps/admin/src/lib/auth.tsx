@@ -1,8 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { Navigate, useLocation, useNavigate } from "react-router-dom";
 
 type Role = "super_admin" | "admin" | "manager" | "employee";
-type AuthState = { role: Role | null; email: string | null };
+type AuthState = { role: Role | null; email: string | null; token: string | null };
 
 type Ctx = {
   auth: AuthState;
@@ -11,34 +10,55 @@ type Ctx = {
 };
 
 const AuthContext = createContext<Ctx | null>(null);
+const API = import.meta.env.VITE_API_BASE_URL as string;
+
+async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const res = await fetch(`${API}${path}`, {
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    ...opts
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "");
+    throw new Error(msg || `HTTP ${res.status}`);
+  }
+  return (await res.json()) as T;
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [auth, setAuth] = useState<AuthState>({ role: null, email: null });
+  const [auth, setAuth] = useState<AuthState>({ role: null, email: null, token: null });
 
   useEffect(() => {
-    const role = localStorage.getItem("role") as Role | null;
+    const token = localStorage.getItem("token");
     const email = localStorage.getItem("email");
-    if (role) setAuth({ role, email: email ?? null });
+    const role = localStorage.getItem("role") as Role | null;
+    if (token && role) setAuth({ token, email, role });
   }, []);
 
-  const login = async (email: string, _password: string) => {
-    // Neden: v1'de mock; gerçek API gelince burası değişecek.
-    localStorage.setItem("role", "super_admin");
-    localStorage.setItem("email", email);
-    setAuth({ role: "super_admin", email });
+  const login = async (email: string, password: string) => {
+    // Neden: Gerçek API'ye bağlanıyoruz; mock yok.
+    if (!API) throw new Error("API URL tanımlı değil (VITE_API_BASE_URL).");
+    const t = await api<{ access_token: string }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password })
+    });
+    const me = await api<{ id: number; email: string; role: Role }>("/auth/me", {
+      headers: { Authorization: `Bearer ${t.access_token}` }
+    });
+
+    localStorage.setItem("token", t.access_token);
+    localStorage.setItem("email", me.email);
+    localStorage.setItem("role", me.role);
+    setAuth({ token: t.access_token, email: me.email, role: me.role });
   };
 
   const logout = () => {
-    localStorage.removeItem("role");
+    localStorage.removeItem("token");
     localStorage.removeItem("email");
-    setAuth({ role: null, email: null });
+    localStorage.removeItem("role");
+    setAuth({ role: null, email: null, token: null });
   };
 
-  return (
-    <AuthContext.Provider value={{ auth, login, logout }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={{ auth, login, logout }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
@@ -55,18 +75,6 @@ export function RequireRole({
   children: React.ReactNode;
 }) {
   const { auth } = useAuth();
-  const location = useLocation();
-  if (!auth.role || !roles.includes(auth.role)) {
-    return <Navigate to="/login" state={{ from: location }} replace />;
-  }
+  if (!auth.role || !roles.includes(auth.role)) return null;
   return <>{children}</>;
-}
-
-export function useLogoutRedirect() {
-  const nav = useNavigate();
-  const { logout } = useAuth();
-  return () => {
-    logout();
-    nav("/login", { replace: true });
-  };
 }
