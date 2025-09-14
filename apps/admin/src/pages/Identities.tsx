@@ -7,10 +7,9 @@ async function apiGet<T>(path: string): Promise<T> {
   const token = localStorage.getItem("token") || "";
   const r = await fetch(`${API}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
-    credentials: "include",
+    // NOTE: cookie taşımıyoruz; CORS preflight sorununa yol açmasın diye credentials: "include" KALDIRILDI
   });
   if (r.status === 401) {
-    // oturum düşmüşse login'e gönder
     window.location.href = "/login";
     throw new Error("Unauthorized");
   }
@@ -30,7 +29,7 @@ async function apiPost<T>(
   const r = await fetch(`${API}${path}?${qs.toString()}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
-    credentials: "include",
+    // NOTE: credentials: "include" KALDIRILDI
   });
   if (r.status === 401) {
     window.location.href = "/login";
