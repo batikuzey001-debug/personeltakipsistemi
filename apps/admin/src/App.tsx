@@ -9,6 +9,9 @@ import Users from "./pages/Users";             // Super Admin için kullanıcı 
 import IdentitiesPage from "./pages/Identities"; // Kişi Eşleştirme (pending → employee bağlama)
 import Layout from "./components/Layout";
 import { RequireRole } from "./lib/auth";
+import EmployeeDetail from "./pages/EmployeeDetail";
+// ...
+<Route path="/employee-detail" element={<Protected><Layout><EmployeeDetail /></Layout></Protected>} />
 
 function Protected({ children }: { children: React.ReactNode }) {
   // V1: sadece super_admin erişir; ileride rol bazlı genişletilecek.
