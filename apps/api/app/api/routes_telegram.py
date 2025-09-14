@@ -78,10 +78,23 @@ async def webhook(secret: str, request: Request, db: Session = Depends(get_db)):
             elif _is_approve(text): ev_type = "approve"
             else: ev_type = "reply_close"
             payload = {"text": text}
-    elif channel_tag == "mesai":
-        ev_type, payload = "note", {"text": text}
-    else:
-        ev_type, payload = "note", {"text": text}
+       elif channel_tag == "mesai":
+        # Mesai mesajlarını parse et
+        text_norm = text.strip()
+        # Regex: "13.09.25 Ali Giriş 00/08"
+        import re
+        m = re.match(r"(\d{1,2}\.\d{1,2}\.\d{2})\s+(.+?)\s+(G[çÇ]ıkış|G[İi]riş)\s+(\d{1,2})[/:](\d{1,2})", text_norm)
+        if m:
+            tarih, isim, islem_raw, sa1, sa2 = m.groups()
+            islem = "check_in" if "giriş" in islem_raw.lower() else "check_out"
+            ev_type, payload = islem, {
+                "person": isim,
+                "plan_start": f"{sa1}:00",
+                "plan_end": f"{sa2}:00",
+                "raw": text_norm,
+            }
+        else:
+            ev_type, payload = "note", {"text": text_norm}
 
     # events (idempotent corr_id+type)
     exists = db.query(Event).filter_by(correlation_id=correlation_id, type=ev_type).first()
