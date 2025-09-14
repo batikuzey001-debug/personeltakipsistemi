@@ -1,3 +1,4 @@
+# apps/api/app/api/routes_telegram.py
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
@@ -10,18 +11,29 @@ from app.models.events import RawMessage, Event
 router = APIRouter(prefix="/integrations/telegram", tags=["integrations"])
 
 def _norm(s: str) -> str:
-    return (s or "").lower().replace("ı","i").replace("ş","s").replace("ğ","g").replace("ç","c").replace("ö","o").replace("ü","u")
+    return (s or "").lower()\
+        .replace("ı","i").replace("ş","s").replace("ğ","g")\
+        .replace("ç","c").replace("ö","o").replace("ü","u")
 
 def _first_match(text: str) -> bool:
     s = _norm(text)
-    return (re.search(r"(?:^|\s)k(?:\s|$)", s) or re.search(r"\bk\s*t+\b", s) or re.search(r"\bkt+\b", s)
-            or "bakiyorum" in s or "ilgileniyorum" in s or re.search(r"kontrol(\s+ediyorum)?", s))
+    return (
+        re.search(r"(?:^|\s)k(?:\s|$)", s)
+        or re.search(r"\bk\s*t+\b", s)
+        or re.search(r"\bkt+\b", s)
+        or "bakiyorum" in s
+        or "ilgileniyorum" in s
+        or re.search(r"kontrol(\s+ediyorum)?", s)
+    )
 
 APPROVE_PAT = [r"\bonay\b", r"onayland[ıi]", r"\btamam\b", r"\bok\b", "✅", "👍"]
 REJECT_PAT  = [r"\bred\b", r"\biptal\b", r"\bolumsuz\b", r"\bhata\b", "❌", "🚫"]
 
-def _is_approve(text: str) -> bool: s=_norm(text); return any(re.search(p, s) for p in APPROVE_PAT)
-def _is_reject(text: str) -> bool:  s=_norm(text); return any(re.search(p, s) for p in REJECT_PAT)
+def _is_approve(text: str) -> bool:
+    s = _norm(text); return any(re.search(p, s) for p in APPROVE_PAT)
+
+def _is_reject(text: str) -> bool:
+    s = _norm(text); return any(re.search(p, s) for p in REJECT_PAT)
 
 def _idset(csv: str) -> set[int]:
     return set(int(x.strip()) for x in (csv or "").split(",") if x.strip())
@@ -42,8 +54,14 @@ async def webhook(secret: str, request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="forbidden")
 
     upd = await request.json()
-    msg = upd.get("message") or upd.get("edited_message") or upd.get("channel_post") or upd.get("edited_channel_post")
-    if not msg: return {"ok": True}
+    msg = (
+        upd.get("message")
+        or upd.get("edited_message")
+        or upd.get("channel_post")
+        or upd.get("edited_channel_post")
+    )
+    if not msg:
+        return {"ok": True}
 
     chat_id = int((msg.get("chat") or {}).get("id"))
     msg_id  = int(msg.get("message_id"))
@@ -68,20 +86,61 @@ async def webhook(secret: str, request: Request, db: Session = Depends(get_db)):
     origin_id = origin.get("message_id") if origin else msg_id
     correlation_id = f"{chat_id}:{origin_id}"
 
-    # classify
-    if channel_tag in ("bonus","finans"):
+    # ---- classify
+    text_norm = (text or "").strip()
+
+    if channel_tag in ("bonus", "finans"):
         if not origin:
-            ev_type, payload = "origin", {"talep_text": text}
+            ev_type, payload = "origin", {"talep_text": text_norm}
         else:
-            if _first_match(text): ev_type = "reply_first"
-            elif _is_reject(text): ev_type = "reject"
-            elif _is_approve(text): ev_type = "approve"
-            else: ev_type = "reply_close"
-            payload = {"text": text}
+            if _first_match(text_norm):
+                ev_type = "reply_first"
+            elif _is_reject(text_norm):
+                ev_type = "reject"
+            elif _is_approve(text_norm):
+                ev_type = "approve"
+            else:
+                ev_type = "reply_close"
+            payload = {"text": text_norm}
+
     elif channel_tag == "mesai":
-        ev_type, payload = "note", {"text": text}
+        # Beklenen örnekler:
+        #  "13.09.25 Ali Giriş 00/08"
+        #  "13/09/2025 Teoman Çıkış 08:16"
+        m = re.match(
+            r"(?P<d>\d{1,2}[./]\d{1,2}[./]\d{2,4})\s+(?P<name>.+?)\s+(?P<op>G[İi]riş|Giris|GIRIS|giriş|G[çÇ]ıkış|C[ıi]kış|Çıkış|Cikis|çıkış)\s+(?P<h1>\d{1,2})[/:](?P<h2>\d{1,2})",
+            text_norm
+        )
+        if m:
+            dstr = m.group("d").replace("/", ".")
+            dd, mm, yy = dstr.split(".")
+            yy = int(yy)
+            if yy < 100: yy += 2000
+            try:
+                parsed_day_iso = datetime(yy, int(mm), int(dd), tzinfo=timezone.utc).date().isoformat()
+            except ValueError:
+                parsed_day_iso = None
+
+            raw_op = _norm(m.group("op"))
+            is_giris = "giris" in raw_op
+            ev_type = "check_in" if is_giris else "check_out"
+
+            h1 = int(m.group("h1")); h2 = int(m.group("h2"))
+            plan_start = f"{h1:02d}:00"
+            plan_end   = f"{h2:02d}:00"
+
+            payload = {
+                "person": m.group("name").strip(),
+                "plan_start": plan_start,
+                "plan_end": plan_end,
+                "day": parsed_day_iso,
+                "raw": text_norm,
+            }
+        else:
+            ev_type, payload = "note", {"text": text_norm}
+
     else:
-        ev_type, payload = "note", {"text": text}
+        ev_type, payload = "note", {"text": text_norm}
 
     # events (idempotent corr_id+type)
     exists = db.query(Event).filter_by(correlation_id=correlation_id, type=ev_type).first()
