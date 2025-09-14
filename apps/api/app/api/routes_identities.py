@@ -214,3 +214,56 @@ def backfill_from_events(
         "scanned_events": len(evs),
         "new_actor_keys": len(found),
     }
+@router.post("/enrich-hints", dependencies=[Depends(RolesAllowed("super_admin","admin"))])
+def enrich_hints_for_pending(
+    since_days: int = Query(365, ge=0, le=3650),
+    db: Session = Depends(get_db),
+):
+    """
+    Daha önce oluşmuş pending kimliklerin hint_name alanını,
+    son event'lerdeki mesai 'person' veya username ile doldurur.
+    """
+    # pending kayıtları çek
+    pendings = db.query(EmployeeIdentity).filter(EmployeeIdentity.status == "pending").all()
+    if not pendings:
+        return {"ok": True, "updated": 0}
+
+    since_ts = None
+    if since_days > 0:
+        since_ts = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    updated = 0
+    for rec in pendings:
+        kind, val = _parse_actor_key(rec.actor_key)
+        if not kind or rec.hint_name:  # zaten isim varsa atla
+            continue
+
+        q = db.query(Event).order_by(Event.ts.desc())
+        if kind == "uid":
+            q = q.filter(Event.from_user_id == val)
+        else:
+            q = q.filter(Event.from_username == val)
+        if since_ts:
+            q = q.filter(Event.ts >= since_ts)
+
+        ev = q.first()
+        if not ev:
+            continue
+
+        # Önce mesai 'person' dene; yoksa username kullan
+        hint = None
+        if ev.source_channel == "mesai":
+            try:
+                hint = (ev.payload_json or {}).get("person") or None
+            except Exception:
+                hint = None
+        if not hint and ev.from_username:
+            hint = ev.from_username.lstrip("@")
+
+        if hint:
+            rec.hint_name = hint
+            db.add(rec)
+            updated += 1
+
+    db.commit()
+    return {"ok": True, "updated": updated}
