@@ -103,3 +103,107 @@ def bind_identity(
 
     db.commit()
     return {"ok": True, "actor_key": actor_key, "employee_id": emp.employee_id, "retro_days": retro_days}
+
+# apps/api/app/api/routes_identities.py  → dosyanın SONUNA EKLE
+from typing import Dict, Tuple
+
+def _actor_key(uid: int | None, uname: str | None) -> str | None:
+    if uid: return f"uid:{uid}"
+    if uname: return f"uname:{uname}"
+    return None
+
+@router.post("/backfill-from-events", dependencies=[Depends(RolesAllowed("super_admin","admin"))])
+def backfill_from_events(
+    since_days: int = Query(90, ge=0, le=365, description="Kaç gün geriye bakılacak (0 = tüm veriler)"),
+    auto_create: bool = Query(False, description="True ise yeni employee taslakları oluşturup bağlar"),
+    db: Session = Depends(get_db),
+):
+    """
+    Geçmiş events tablosundan actor_key üretir:
+      - identities.pending kayıtları ekler (yoksa)
+      - mesai payload'ından (person) isim ipucu doldurur
+      - auto_create=True ise: yeni employee (draft) oluşturur ve identity'yi confirmed yapar
+    """
+    # 1) Zaman filtresi
+    from datetime import datetime, timedelta, timezone
+    since_ts = None
+    if since_days > 0:
+        since_ts = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    # 2) Eventleri çek (sondan başa; aynı actor için son mesai isim ipucunu yakalamak için)
+    q = db.query(Event.from_user_id, Event.from_username, Event.source_channel, Event.payload_json, Event.ts)
+    if since_ts:
+        q = q.filter(Event.ts >= since_ts)
+    q = q.order_by(Event.ts.desc())
+    evs = q.all()
+
+    # 3) Var olan identity anahtarlarını al
+    existing_keys = {r.actor_key for r in db.query(EmployeeIdentity.actor_key).all()}
+
+    # 4) actor_key -> (hint_name, seen_channel)
+    found: Dict[str, Tuple[str | None, str | None]] = {}
+
+    for uid, uname, ch, payload, _ in evs:
+        key = _actor_key(uid, uname)
+        if not key or key in existing_keys or key in found:
+            continue
+        hint_name = None
+        if ch == "mesai":
+            try:
+                hint_name = (payload or {}).get("person") or None
+            except Exception:
+                hint_name = None
+        found[key] = (hint_name, ch)
+
+    inserted = 0
+    auto_created = 0
+
+    for key, (hint_name, ch) in found.items():
+        if not auto_create:
+            # pending identity ekle
+            db.add(EmployeeIdentity(actor_key=key, status="pending", hint_name=hint_name))
+            inserted += 1
+        else:
+            # Taslak employee oluştur + identity'yi confirmed yap
+            # employee_id üret: TG-UID-xxxxx veya TG-UNAME-@nick
+            if key.startswith("uid:"):
+                emp_id = f"TG-UID-{key.split(':',1)[1]}"
+                full_name = hint_name or emp_id
+            else:
+                raw = key.split(":",1)[1]
+                safe = raw.replace("@","").replace(" ","").upper()[:32]
+                emp_id = f"TG-UNAME-{safe}"
+                full_name = hint_name or raw
+
+            # Çakışma varsa sonuna sayı ekle
+            suffix = 1
+            base_id = emp_id
+            while db.query(Employee).filter(Employee.employee_id == emp_id).first():
+                suffix += 1
+                emp_id = f"{base_id}-{suffix}"
+
+            emp = Employee(
+                employee_id=emp_id,
+                full_name=full_name,
+                email=None,
+                team_id=None,
+                title=None,
+                hired_at=None,
+                status="active",
+            )
+            db.add(emp)
+            db.flush()
+
+            # identity confirmed
+            db.add(EmployeeIdentity(actor_key=key, employee_id=emp.employee_id, status="confirmed", hint_name=hint_name))
+            auto_created += 1
+
+    db.commit()
+    return {
+        "ok": True,
+        "since_days": since_days,
+        "pending_inserted": inserted,
+        "auto_created_employees": auto_created,
+        "scanned_events": len(evs),
+        "new_actor_keys": len(found),
+    }
