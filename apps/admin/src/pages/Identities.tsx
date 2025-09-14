@@ -7,7 +7,6 @@ async function apiGet<T>(path: string): Promise<T> {
   const token = localStorage.getItem("token") || "";
   const r = await fetch(`${API}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
-    // NOTE: cookie taşımıyoruz; CORS preflight sorununa yol açmasın diye credentials: "include" KALDIRILDI
   });
   if (r.status === 401) {
     window.location.href = "/login";
@@ -29,7 +28,6 @@ async function apiPost<T>(
   const r = await fetch(`${API}${path}?${qs.toString()}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
-    // NOTE: credentials: "include" KALDIRILDI
   });
   if (r.status === 401) {
     window.location.href = "/login";
@@ -88,25 +86,32 @@ export default function IdentitiesPage() {
 
   async function createAndBind(
     actor_key: string,
-    employee_id: string,
+    employee_id: string,   // boş bırakılabilir → RD-xxx otomatik atanır
     full_name: string,
     team?: string
   ) {
     setErr(null);
     setOk(null);
-    if (!employee_id.trim() || !full_name.trim()) {
-      setErr("Yeni kayıt için employee_id ve Ad Soyad zorunludur");
+    if (!full_name.trim()) {
+      setErr("Yeni kayıt için Ad Soyad zorunludur");
       return;
     }
     try {
-      await apiPost("/identities/bind", {
+      const params: Record<string, string | number> = {
         actor_key,
-        create_employee_id: employee_id,
         create_full_name: full_name,
-        create_team: team || "",
         retro_days: 14,
-      });
-      setOk(`Oluşturuldu ve bağlandı: ${employee_id}`);
+      };
+      if (team && team.trim()) params.create_team = team.trim();
+      // employee_id alanı BOŞ ise göndermiyoruz → backend RD-xxx üretir
+      if (employee_id && employee_id.trim()) params.employee_id = employee_id.trim();
+
+      await apiPost("/identities/bind", params);
+      setOk(
+        employee_id && employee_id.trim()
+          ? `Oluşturuldu ve bağlandı: ${employee_id.trim()}`
+          : `Oluşturuldu ve bağlandı (otomatik RD-xxx)`
+      );
       await load();
     } catch (e: any) {
       setErr(e?.message || "Oluştur/bağla başarısız");
@@ -182,9 +187,8 @@ export default function IdentitiesPage() {
                     >
                       <input
                         name={`newid_${keySafe}`}
-                        placeholder="yeni employee_id"
-                        style={{ width: 160, marginRight: 6 }}
-                        required
+                        placeholder="(boş bırak = otomatik RD-xxx)"
+                        style={{ width: 200, marginRight: 6 }}
                       />
                       <input
                         name={`newname_${keySafe}`}
