@@ -5,16 +5,13 @@ import Dashboard from "./pages/Dashboard";
 import Employees from "./pages/Employees";
 import KPIs from "./pages/KPIs";
 import Scores from "./pages/Scores";
-import Users from "./pages/Users";             // Super Admin için kullanıcı yönetimi
-import IdentitiesPage from "./pages/Identities"; // Kişi Eşleştirme (pending → employee bağlama)
+import Users from "./pages/Users";
+import IdentitiesPage from "./pages/Identities";
+import EmployeeDetail from "./pages/EmployeeDetail";
 import Layout from "./components/Layout";
 import { RequireRole } from "./lib/auth";
-import EmployeeDetail from "./pages/EmployeeDetail";
-// ...
-<Route path="/employee-detail" element={<Protected><Layout><EmployeeDetail /></Layout></Protected>} />
 
 function Protected({ children }: { children: React.ReactNode }) {
-  // V1: sadece super_admin erişir; ileride rol bazlı genişletilecek.
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
 }
 
@@ -84,6 +81,18 @@ export default function App() {
           <Protected>
             <Layout>
               <IdentitiesPage />
+            </Layout>
+          </Protected>
+        }
+      />
+
+      {/* Personel Detay rotası */}
+      <Route
+        path="/employee-detail"
+        element={
+          <Protected>
+            <Layout>
+              <EmployeeDetail />
             </Layout>
           </Protected>
         }
