@@ -21,6 +21,9 @@ from app.api.routes_telegram import router as telegram_router
 from app.api.routes_debug import router as debug_router
 from app.api.routes_jobs import router as jobs_router
 from app.api.routes_identities import router as identities_router
+from app.api.routes_employee_view import router as employee_view_router  # EKLE
+# ...
+app.include_router(employee_view_router)  # EKLE
 
 # V1: hızlı başlat (prod'da Alembic'e geçilecek)
 Base.metadata.create_all(bind=engine)
