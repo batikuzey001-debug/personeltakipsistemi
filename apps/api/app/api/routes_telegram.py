@@ -8,12 +8,19 @@ from app.deps import get_db
 from app.core.config import settings
 from app.models.events import RawMessage, Event
 
+# Kimlik eşleme yardımcıları (actor_key üret, pending kaydı aç, confirmed kontrol)
+from app.services.identity_resolver import (
+    actor_key as make_key,
+    resolve_employee_id,
+    ensure_pending,
+)
+
 router = APIRouter(prefix="/integrations/telegram", tags=["integrations"])
 
 def _norm(s: str) -> str:
     return (s or "").lower()\
-        .replace("ı","i").replace("ş","s").replace("ğ","g")\
-        .replace("ç","c").replace("ö","o").replace("ü","u")
+        .replace("ı", "i").replace("ş", "s").replace("ğ", "g")\
+        .replace("ç", "c").replace("ö", "o").replace("ü", "u")
 
 def _first_match(text: str) -> bool:
     s = _norm(text)
@@ -30,10 +37,12 @@ APPROVE_PAT = [r"\bonay\b", r"onayland[ıi]", r"\btamam\b", r"\bok\b", "✅", "�
 REJECT_PAT  = [r"\bred\b", r"\biptal\b", r"\bolumsuz\b", r"\bhata\b", "❌", "🚫"]
 
 def _is_approve(text: str) -> bool:
-    s = _norm(text); return any(re.search(p, s) for p in APPROVE_PAT)
+    s = _norm(text)
+    return any(re.search(p, s) for p in APPROVE_PAT)
 
 def _is_reject(text: str) -> bool:
-    s = _norm(text); return any(re.search(p, s) for p in REJECT_PAT)
+    s = _norm(text)
+    return any(re.search(p, s) for p in REJECT_PAT)
 
 def _idset(csv: str) -> set[int]:
     return set(int(x.strip()) for x in (csv or "").split(",") if x.strip())
@@ -63,22 +72,28 @@ async def webhook(secret: str, request: Request, db: Session = Depends(get_db)):
     if not msg:
         return {"ok": True}
 
-    chat_id = int((msg.get("chat") or {}).get("id"))
-    msg_id  = int(msg.get("message_id"))
-    from_user = msg.get("from") or {}
-    from_uid  = from_user.get("id")
-    from_uname= ("@" + from_user.get("username")) if from_user.get("username") else None
-    text = (msg.get("text") or msg.get("caption") or "")[:2000]
-    ts = datetime.fromtimestamp(int(msg.get("date", 0)), tz=timezone.utc)
-    kind = "reply" if msg.get("reply_to_message") else "msg"
+    chat_id  = int((msg.get("chat") or {}).get("id"))
+    msg_id   = int(msg.get("message_id"))
+    from_user   = msg.get("from") or {}
+    from_uid    = from_user.get("id")
+    from_uname  = ("@" + from_user.get("username")) if from_user.get("username") else None
+    text        = (msg.get("text") or msg.get("caption") or "")[:2000]
+    ts          = datetime.fromtimestamp(int(msg.get("date", 0)), tz=timezone.utc)
+    kind        = "reply" if msg.get("reply_to_message") else "msg"
     channel_tag = _channel_tag(chat_id)
 
     # raw_messages (idempotent)
     if not db.query(RawMessage).filter_by(chat_id=chat_id, msg_id=msg_id).first():
         db.add(RawMessage(
-            update_id=upd.get("update_id"), chat_id=chat_id, msg_id=msg_id,
-            from_user_id=from_uid, from_username=from_uname, ts=ts,
-            channel_tag=channel_tag, kind=kind, json=upd
+            update_id=upd.get("update_id"),
+            chat_id=chat_id,
+            msg_id=msg_id,
+            from_user_id=from_uid,
+            from_username=from_uname,
+            ts=ts,
+            channel_tag=channel_tag,
+            kind=kind,
+            json=upd
         ))
 
     # correlation
@@ -89,24 +104,10 @@ async def webhook(secret: str, request: Request, db: Session = Depends(get_db)):
     # ---- classify
     text_norm = (text or "").strip()
 
-    if channel_tag in ("bonus", "finans"):
-        if not origin:
-            ev_type, payload = "origin", {"talep_text": text_norm}
-        else:
-            if _first_match(text_norm):
-                ev_type = "reply_first"
-            elif _is_reject(text_norm):
-                ev_type = "reject"
-            elif _is_approve(text_norm):
-                ev_type = "approve"
-            else:
-                ev_type = "reply_close"
-            payload = {"text": text_norm}
-
-    elif channel_tag == "mesai":
-        # Beklenen örnekler:
-        #  "13.09.25 Ali Giriş 00/08"
-        #  "13/09/2025 Teoman Çıkış 08:16"
+    # İsim ipucu (mesai mesajından kişi adı; yoksa username)
+    name_hint = None
+    if channel_tag == "mesai":
+        # Örn: "13.09.25 Ali Giriş 00/08" veya "13/09/2025 Teoman Çıkış 08:16"
         m = re.match(
             r"(?P<d>\d{1,2}[./]\d{1,2}[./]\d{2,4})\s+(?P<name>.+?)\s+(?P<op>G[İi]riş|Giris|GIRIS|giriş|G[çÇ]ıkış|C[ıi]kış|Çıkış|Cikis|çıkış)\s+(?P<h1>\d{1,2})[/:](?P<h2>\d{1,2})",
             text_norm
@@ -136,9 +137,40 @@ async def webhook(secret: str, request: Request, db: Session = Depends(get_db)):
                 "day": parsed_day_iso,
                 "raw": text_norm,
             }
+            name_hint = payload["person"]
         else:
             ev_type, payload = "note", {"text": text_norm}
 
+    # Mesai dışında veya parser isim bulamadıysa username'i ipucu kullan
+    if not name_hint and from_uname:
+        name_hint = from_uname.lstrip("@")
+
+    # Actor key üret ve confirmed eşleşme var mı kontrol et
+    key = make_key(from_uid, from_uname)
+    employee_id = resolve_employee_id(db, key) if key != "unknown" else None
+    # Eşleşme yoksa pending kimlik oluştur (isim ipucunu ekle)
+    if not employee_id and key != "unknown":
+        ensure_pending(db, key, name_hint=name_hint, team_hint=None)
+
+    # Bonus/Finans sınıflaması
+    if channel_tag in ("bonus", "finans"):
+        if not origin:
+            ev_type, payload = "origin", {"talep_text": text_norm}
+        else:
+            if _first_match(text_norm):
+                ev_type = "reply_first"
+            elif _is_reject(text_norm):
+                ev_type = "reject"
+            elif _is_approve(text_norm):
+                ev_type = "approve"
+            else:
+                ev_type = "reply_close"
+            payload = {"text": text_norm}
+
+    # Mesai için, yukarıda parser set etmediyse generic note gönder
+    elif channel_tag == "mesai":
+        if 'ev_type' not in locals():
+            ev_type, payload = "note", {"text": text_norm}
     else:
         ev_type, payload = "note", {"text": text_norm}
 
@@ -146,9 +178,16 @@ async def webhook(secret: str, request: Request, db: Session = Depends(get_db)):
     exists = db.query(Event).filter_by(correlation_id=correlation_id, type=ev_type).first()
     if not exists:
         db.add(Event(
-            source_channel=channel_tag, type=ev_type, chat_id=chat_id, msg_id=msg_id,
-            correlation_id=correlation_id, ts=ts, from_user_id=from_uid,
-            from_username=from_uname, employee_id=None, payload_json=payload
+            source_channel=channel_tag,
+            type=ev_type,
+            chat_id=chat_id,
+            msg_id=msg_id,
+            correlation_id=correlation_id,
+            ts=ts,
+            from_user_id=from_uid,
+            from_username=from_uname,
+            employee_id=employee_id,
+            payload_json=payload
         ))
 
     db.commit()
