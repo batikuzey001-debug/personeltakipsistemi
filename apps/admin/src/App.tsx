@@ -5,12 +5,13 @@ import Dashboard from "./pages/Dashboard";
 import Employees from "./pages/Employees";
 import KPIs from "./pages/KPIs";
 import Scores from "./pages/Scores";
-import Users from "./pages/Users";            // Super Admin için kullanıcı yönetimi
+import Users from "./pages/Users";             // Super Admin için kullanıcı yönetimi
+import IdentitiesPage from "./pages/Identities"; // Kişi Eşleştirme (pending → employee bağlama)
 import Layout from "./components/Layout";
 import { RequireRole } from "./lib/auth";
 
 function Protected({ children }: { children: React.ReactNode }) {
-  // Neden: V1'de sadece super_admin tüm sayfalara erişsin; sonra rol bazlı genişleteceğiz.
+  // V1: sadece super_admin erişir; ileride rol bazlı genişletilecek.
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
 }
 
@@ -69,6 +70,17 @@ export default function App() {
           <Protected>
             <Layout>
               <Users />
+            </Layout>
+          </Protected>
+        }
+      />
+
+      <Route
+        path="/identities"
+        element={
+          <Protected>
+            <Layout>
+              <IdentitiesPage />
             </Layout>
           </Protected>
         }
