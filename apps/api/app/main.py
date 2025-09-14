@@ -6,10 +6,10 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.session import engine
 
-# MODELLER (create_all'ın tüm tabloları görmesi için YÜKLE)
+# MODELLER (create_all tüm tabloları görsün)
 import app.models.events        # raw_messages, events
 import app.models.facts         # facts_daily, facts_monthly
-import app.models.identities    # employee_identities  <-- eklendi
+import app.models.identities    # employee_identities
 
 # ROUTERLAR
 from app.api.routes_auth import router as auth_router
@@ -19,13 +19,14 @@ from app.api.routes_users import router as users_router
 from app.api.routes_telegram import router as telegram_router
 from app.api.routes_debug import router as debug_router
 from app.api.routes_jobs import router as jobs_router
+from app.api.routes_identities import router as identities_router  # <-- EKLENDİ
 
-# V1: hızlı başlat (prod'da Alembic migration'a geçilecek)
+# V1: hızlı başlat (prod'da Alembic'e geçilecek)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.APP_NAME)
 
-# CORS: V1 açık; prod'da panel domain'i ile sınırla
+# CORS: V1 geniş; prod'da panel domaini ile sınırla
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,3 +47,4 @@ app.include_router(users_router)
 app.include_router(telegram_router)
 app.include_router(debug_router)
 app.include_router(jobs_router)
+app.include_router(identities_router)  # <-- EKLENDİ
