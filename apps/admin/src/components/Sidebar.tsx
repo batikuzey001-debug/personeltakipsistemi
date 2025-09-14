@@ -17,6 +17,7 @@ export default function Sidebar() {
     { to: "/employees", label: "Personeller" },
     { to: "/kpis", label: "KPI'lar" },
     { to: "/scores", label: "Skorlar" },
+    { to: "/employee-detail", label: "Personel Detay" },
     ...(auth.role === "super_admin"
       ? [
           { to: "/users", label: "Kullanıcılar" },
