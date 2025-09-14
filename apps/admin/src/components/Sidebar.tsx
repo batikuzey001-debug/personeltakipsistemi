@@ -17,11 +17,11 @@ export default function Sidebar() {
     { to: "/employees", label: "Personeller" },
     { to: "/kpis", label: "KPI'lar" },
     { to: "/scores", label: "Skorlar" },
-    { to: "/employee-detail", label: "Personel Detay" },
     ...(auth.role === "super_admin"
       ? [
+          { to: "/employee-detail", label: "Personel Detay" },
           { to: "/users", label: "Kullanıcılar" },
-          { to: "/identities", label: "Kişi Eşleştirme" }, // <-- eklendi
+          { to: "/identities", label: "Kişi Eşleştirme" },
         ]
       : []),
   ];
