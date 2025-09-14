@@ -93,10 +93,8 @@ def bind_identity(
         # RD-xxx üret
         emp_id = _next_rd_id(db)
         full_name = create_full_name or rec.hint_name or f"Personel {emp_id}"
-        # güvenliğe dair min. kontrol
         if len(full_name.strip()) == 0:
             full_name = f"Personel {emp_id}"
-        # oluştur
         emp = Employee(
             employee_id=emp_id,
             full_name=full_name.strip(),
@@ -140,6 +138,7 @@ def backfill_from_events(
     Geçmiş events'ten actor_key üretir:
       - identities.pending kayıtları ekler (yoksa)
       - mesai payload'ından 'person' alanını hint_name olarak alır
+      - (YENİ) Mesai'de isim yoksa username'i hint_name yapar
       - auto_create=True ise: RD-xxx ile yeni employee oluşturup identity'yi confirmed yapar
     """
     # 1) zaman filtresi
@@ -168,13 +167,17 @@ def backfill_from_events(
             key = f"uname:{uname}"
         if not key or key in existing_keys or key in found:
             continue
-        # hint
+
+        # hint: mesai person adı > yoksa username
         hint_name = None
         if ch == "mesai":
             try:
                 hint_name = (payload or {}).get("person") or None
             except Exception:
                 hint_name = None
+        if not hint_name and uname:
+            hint_name = str(uname).lstrip("@")
+
         found[key] = (hint_name, ch)
 
     pending_inserted = 0
@@ -187,7 +190,7 @@ def backfill_from_events(
         else:
             # RD-xxx üret ve taslak oluştur
             emp_id = _next_rd_id(db)
-            full_name = hint_name or f"Personel {emp_id}"
+            full_name = (hint_name or f"Personel {emp_id}").strip()
             emp = Employee(
                 employee_id=emp_id,
                 full_name=full_name,
