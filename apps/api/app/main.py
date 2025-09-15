@@ -29,28 +29,36 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.APP_NAME)
 
-# CORS – panel → API istekleri
+# CORS – panel → API istekleri için serbest bırakıyoruz (Bearer token header kullanıyoruz)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # Token header ile gidiyoruz; cookie yok
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---- Startup migrasyonları (kolonlar yoksa ekle) ----
+# ---- Startup migrasyonları (kolon yoksa ekle; tip yanlışsa düzelt) ----
 MIGRATIONS_SQL = [
     # UID kolonlarını BIGINT'e yükselt
     "ALTER TABLE IF EXISTS raw_messages ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
     "ALTER TABLE IF EXISTS events       ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
 
-    # employees kart alanları (VARSA ATLAR) — DİKKAT: IF EXISTS + IF NOT EXISTS
+    # employees: kart alanları (varsa atlar)
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS department VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(255);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS phone VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
+
+    # **kritik düzeltme**: telegram_user_id sütunu daha önce INTEGER ise BIGINT'e çevir
+    "DO $$ BEGIN "
+    "  IF EXISTS (SELECT 1 FROM information_schema.columns "
+    "             WHERE table_name='employees' AND column_name='telegram_user_id' AND data_type='integer') THEN "
+    "    EXECUTE 'ALTER TABLE employees ALTER COLUMN telegram_user_id TYPE BIGINT USING telegram_user_id::bigint'; "
+    "  END IF; "
+    "END $$;"
 ]
 
 @app.on_event("startup")
@@ -67,7 +75,7 @@ def run_startup_migrations():
 def healthz():
     return {"ok": True}
 
-# Router kayıtları (app oluşturulduktan sonra)
+# Router kayıtları
 app.include_router(auth_router)
 app.include_router(org_router)
 app.include_router(seed_router)
