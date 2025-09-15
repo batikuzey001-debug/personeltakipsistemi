@@ -88,7 +88,7 @@ export default function IdentitiesPage() {
     actor_key: string,
     employee_id: string,   // boş bırakılabilir → RD-xxx otomatik atanır
     full_name: string,
-    team?: string
+    department?: string
   ) {
     setErr(null);
     setOk(null);
@@ -102,8 +102,8 @@ export default function IdentitiesPage() {
         create_full_name: full_name,
         retro_days: 14,
       };
-      if (team && team.trim()) params.create_team = team.trim();
-      // employee_id alanı BOŞ ise göndermiyoruz → backend RD-xxx üretir
+      // Backend param adı create_team olarak kalıyor; biz UI'da “Departman” gösteriyoruz
+      if (department && department.trim()) params.create_team = department.trim();
       if (employee_id && employee_id.trim()) params.employee_id = employee_id.trim();
 
       await apiPost("/identities/bind", params);
@@ -179,10 +179,10 @@ export default function IdentitiesPage() {
                         const name = (e.currentTarget.elements.namedItem(
                           `newname_${keySafe}`
                         ) as HTMLInputElement).value.trim();
-                        const team = (e.currentTarget.elements.namedItem(
-                          `newteam_${keySafe}`
+                        const dept = (e.currentTarget.elements.namedItem(
+                          `newteam_${keySafe}`   // param adı backend uyumu için sabit kaldı
                         ) as HTMLInputElement)?.value?.trim();
-                        createAndBind(r.actor_key, emp, name, team);
+                        createAndBind(r.actor_key, emp, name, dept);
                       }}
                     >
                       <input
@@ -199,8 +199,8 @@ export default function IdentitiesPage() {
                       />
                       <input
                         name={`newteam_${keySafe}`}
-                        placeholder="Takım (ops.)"
-                        style={{ width: 140, marginRight: 6 }}
+                        placeholder="Departman (ops.)"  // <-- Takım yerine Departman
+                        style={{ width: 160, marginRight: 6 }}
                       />
                       <button type="submit">Oluştur + Bağla</button>
                     </form>
