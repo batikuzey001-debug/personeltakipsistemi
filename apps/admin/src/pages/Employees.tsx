@@ -13,27 +13,11 @@ type Employee = {
   title?: string | null;
   hired_at?: string | null; // YYYY-MM-DD
   status: string;
-  telegram_username?: string | null;
-  telegram_user_id?: number | null;
-  phone?: string | null;
-  salary_gross?: number | null;
-  notes?: string | null;
 };
 
 async function apiGet<T>(path: string): Promise<T> {
   const token = localStorage.getItem("token") || "";
   const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (r.status === 401) { window.location.href = "/login"; throw new Error("Unauthorized"); }
-  if (!r.ok) throw new Error(await r.text());
-  return (await r.json()) as T;
-}
-async function apiPatch<T>(path: string, body: any): Promise<T> {
-  const token = localStorage.getItem("token") || "";
-  const r = await fetch(`${API}${path}`, {
-    method: "PATCH",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
   if (r.status === 401) { window.location.href = "/login"; throw new Error("Unauthorized"); }
   if (!r.ok) throw new Error(await r.text());
   return (await r.json()) as T;
@@ -46,11 +30,6 @@ export default function Employees() {
   const [limit, setLimit] = useState(50);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [ok, setOk] = useState<string | null>(null);
-
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<Partial<Employee>>({});
-  const [saving, setSaving] = useState(false);
 
   async function load() {
     setErr(null); setLoading(true);
@@ -68,50 +47,10 @@ export default function Employees() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
   function onSearch(e: React.FormEvent) { e.preventDefault(); load(); }
 
-  async function openEdit(id: string) {
-    setErr(null); setOk(null);
-    try {
-      const emp = await apiGet<Employee>(`/employees/${encodeURIComponent(id)}`);
-      setEditingId(emp.employee_id);
-      setForm({
-        full_name: emp.full_name ?? "",
-        department: emp.department ?? "",
-        email: emp.email ?? "",
-        title: emp.title ?? "",
-        hired_at: emp.hired_at ?? "",
-        status: emp.status ?? "active",
-        telegram_username: emp.telegram_username ?? "",
-        telegram_user_id: emp.telegram_user_id ?? undefined,
-        phone: emp.phone ?? "",
-        salary_gross: (emp.salary_gross as any) ?? undefined,
-        notes: emp.notes ?? "",
-      });
-    } catch (e: any) { setErr(e?.message || "Kayıt alınamadı"); }
-  }
-
-  async function saveEdit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!editingId) return;
-    setSaving(true); setErr(null); setOk(null);
-    try {
-      const payload: any = {};
-      const assign = (k: keyof Employee) => { const v = (form as any)[k]; if (v !== undefined) payload[k] = v === "" ? null : v; };
-      ["full_name","email","title","status","hired_at","telegram_username","phone","notes","department"].forEach(k => assign(k as any));
-      if (form.telegram_user_id !== undefined) payload.telegram_user_id = (form.telegram_user_id as any) === "" ? null : Number(form.telegram_user_id);
-      if (form.salary_gross !== undefined) payload.salary_gross = form.salary_gross === ("" as any) ? null : Number(form.salary_gross);
-      await apiPatch<Employee>(`/employees/${encodeURIComponent(editingId)}`, payload);
-      setOk("Kayıt güncellendi");
-      setEditingId(null);
-      await load();
-    } catch (e: any) { setErr(e?.message || "Kaydedilemedi"); }
-    finally { setSaving(false); }
-  }
-
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <h1>Personeller</h1>
 
-      {/* Filtreler */}
       <form onSubmit={onSearch} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <input placeholder="Ara (ad / e-posta)" value={q} onChange={(e) => setQ(e.target.value)} style={{ padding: 8, minWidth: 260 }} />
         <select value={department} onChange={(e)=>setDepartment(e.target.value)} style={{ padding: 8 }}>
@@ -123,10 +62,8 @@ export default function Employees() {
         </select>
         <button type="submit" disabled={loading}>{loading ? "Yükleniyor…" : "Listele"}</button>
         {err && <span style={{ color: "#b00020", fontSize: 12 }}>{err}</span>}
-        {ok && <span style={{ color: "green", fontSize: 12 }}>{ok}</span>}
       </form>
 
-      {/* Tablo */}
       <div style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -137,7 +74,7 @@ export default function Employees() {
               <th style={{ textAlign: "left", padding: 8 }}>Ünvan</th>
               <th style={{ textAlign: "left", padding: 8 }}>İşe Başlama</th>
               <th style={{ textAlign: "left", padding: 8 }}>Durum</th>
-              <th style={{ textAlign: "left", padding: 8, width: 180 }}>İşlem</th>
+              <th style={{ textAlign: "left", padding: 8 }}>Kişi</th>
             </tr>
           </thead>
           <tbody>
@@ -151,9 +88,8 @@ export default function Employees() {
                 <td style={{ padding: 8 }}>{r.title ?? "-"}</td>
                 <td style={{ padding: 8 }}>{r.hired_at ?? "-"}</td>
                 <td style={{ padding: 8 }}>{r.status}</td>
-                <td style={{ padding: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button onClick={() => openEdit(r.employee_id)}>Düzenle</button>
-                  <Link to={`/employees/${encodeURIComponent(r.employee_id)}`} style={{ alignSelf: "center" }}>Kişi sayfasına git</Link>
+                <td style={{ padding: 8 }}>
+                  <Link to={`/employees/${encodeURIComponent(r.employee_id)}`}>Kişi sayfası</Link>
                 </td>
               </tr>
             ))}
@@ -161,53 +97,6 @@ export default function Employees() {
           </tbody>
         </table>
       </div>
-
-      {/* Düzenle Modal (form) */}
-      {editingId && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.40)", display: "grid", placeItems: "center", zIndex: 1000 }}>
-          <form onSubmit={saveEdit} style={{ width: 720, background: "#fff", borderRadius: 16, padding: 20, boxShadow: "0 18px 40px rgba(0,0,0,0.25)", display: "grid", gap: 16 }}>
-            <div style={{ display: "flex", alignItems: "center" }}>
-              <h2 style={{ margin: 0 }}>Personel Kartı • {editingId}</h2>
-              <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                <button type="button" onClick={() => setEditingId(null)}>Kapat</button>
-                <button type="submit" disabled={saving}>{saving ? "Kaydediliyor…" : "Kaydet"}</button>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <div style={{ display: "grid", gap: 10 }}>
-                <label>Ad Soyad <input value={form.full_name ?? ""} onChange={(e)=>setForm({...form, full_name: e.target.value})} /></label>
-                <label>Departman
-                  <select value={form.department ?? ""} onChange={(e)=>setForm({...form, department: e.target.value})}>
-                    <option value="">Seçiniz</option>
-                    {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
-                  </select>
-                </label>
-                <label>Telegram Kullanıcı Adı <input value={form.telegram_username ?? ""} onChange={(e)=>setForm({...form, telegram_username: e.target.value})} readOnly /></label>
-                <label>Telegram User ID <input value={form.telegram_user_id ?? "" as any} onChange={(e)=>setForm({...form, telegram_user_id: e.target.value === "" ? undefined : Number(e.target.value)})} readOnly /></label>
-                <label>Telefon <input value={form.phone ?? ""} onChange={(e)=>setForm({...form, phone: e.target.value})} /></label>
-              </div>
-              <div style={{ display: "grid", gap: 10 }}>
-                <label>E-posta <input value={form.email ?? ""} onChange={(e)=>setForm({...form, email: e.target.value})} /></label>
-                <label>Ünvan <input value={form.title ?? ""} onChange={(e)=>setForm({...form, title: e.target.value})} /></label>
-                <label>İşe Başlama <input type="date" value={form.hired_at ?? ""} onChange={(e)=>setForm({...form, hired_at: e.target.value})} /></label>
-                <label>Maaş (brüt) <input type="number" step="0.01" value={form.salary_gross ?? "" as any} onChange={(e)=>setForm({...form, salary_gross: e.target.value === "" ? undefined : Number(e.target.value)})} /></label>
-                <label>Durum
-                  <select value={form.status ?? "active"} onChange={(e)=>setForm({...form, status: e.target.value})}>
-                    <option value="active">active</option>
-                    <option value="inactive">inactive</option>
-                  </select>
-                </label>
-              </div>
-            </div>
-
-            <label>Notlar <textarea rows={4} value={form.notes ?? ""} onChange={(e)=>setForm({...form, notes: e.target.value})} /></label>
-
-            {err && <div style={{ color:"#b00020", fontSize:12 }}>{err}</div>}
-            {ok && <div style={{ color:"green", fontSize:12 }}>{ok}</div>}
-          </form>
-        </div>
-      )}
     </div>
   );
 }
