@@ -11,6 +11,7 @@ import EmployeeDetail from "./pages/EmployeeDetail";   // eski genel detay (iste
 import EmployeeProfile from "./pages/EmployeeProfile";  // YENİ: Kişi sayfası
 import Layout from "./components/Layout";
 import { RequireRole } from "./lib/auth";
+import ReportBonusClose from "./pages/ReportBonusClose"; // EKLE
 
 function Protected({ children }: { children: React.ReactNode }) {
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
@@ -42,6 +43,16 @@ export default function App() {
           </Protected>
         }
       />
+        <Route
+  path="/reports/bonus/close-time"
+  element={
+    <Protected>
+      <Layout>
+        <ReportBonusClose />
+      </Layout>
+    </Protected>
+  }
+/>
 
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
