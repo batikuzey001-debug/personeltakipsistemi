@@ -39,10 +39,18 @@ app.add_middleware(
 
 # ---- Basit başlangıç migrasyonları (startup'ta bir kez çalışır) ----
 MIGRATIONS_SQL = [
+    # UID kolonlarını BIGINT'e yükselt
     "ALTER TABLE IF EXISTS raw_messages "
     "  ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
     "ALTER TABLE IF EXISTS events "
     "  ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
+
+    # employees tablosu kart alanları (varsa atlar)
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(255);",
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS phone VARCHAR(32);",
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
 ]
 
 @app.on_event("startup")
@@ -52,6 +60,7 @@ def run_startup_migrations():
             try:
                 conn.execute(text(stmt))
             except Exception as e:
+                # idempotent: kolon zaten varsa/hata varsa servisi durdurma
                 print(f"[startup-migration] skip/err: {e}")
 
 @app.get("/healthz")
@@ -67,4 +76,4 @@ app.include_router(telegram_router)
 app.include_router(debug_router)
 app.include_router(jobs_router)
 app.include_router(identities_router)
-app.include_router(employee_view_router)   # <-- Employee Detay uçları
+app.include_router(employee_view_router)   # Employee Detay uçları
