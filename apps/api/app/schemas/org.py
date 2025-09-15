@@ -13,11 +13,10 @@ class EmployeeOut(BaseModel):
     employee_id: str
     full_name: str
     email: EmailStr | None
-    team_id: int | None
+    department: str | None
     title: str | None
     hired_at: date | None
     status: str
-    # Kart ek alanları
     telegram_username: str | None = None
     telegram_user_id: int | None = None
     phone: str | None = None
@@ -30,12 +29,11 @@ class EmployeeOut(BaseModel):
 class EmployeeUpdateIn(BaseModel):
     full_name: str | None = None
     email: EmailStr | None = None
-    team_id: int | None = None
+    department: str | None = None  # "Call Center" | "Canlı" | "Finans" | "Bonus" | "Admin"
     title: str | None = None
     hired_at: date | None = None
-    status: str | None = None  # "active" | "inactive"
+    status: str | None = None
 
-    # Kart ek alanları
     telegram_username: str | None = None
     telegram_user_id: int | None = None
     phone: str | None = None
