@@ -27,8 +27,8 @@ async function apiPostJSON<T>(path: string, body: any): Promise<T> {
 type Pending = { actor_key: string; hint_name?: string; hint_team?: string; inserted_at: string };
 
 function parseActor(actor_key: string) {
-  if (actor_key.startsWith("uid:")) return { uid: actor_key.slice(4), uname: "" };
-  if (actor_key.startsWith("uname:")) return { uid: "", uname: actor_key.slice(6) };
+  if (actor_key.startsWith("uid:"))   return { uid: actor_key.slice(4),  uname: "" };
+  if (actor_key.startsWith("uname:")) return { uid: "",                  uname: actor_key.slice(6) }; // "@nick"
   return { uid: "", uname: "" };
 }
 
@@ -50,19 +50,15 @@ export default function IdentitiesPage() {
     setErr(null); setOk(null);
     if (!department) { setErr("Lütfen departman seçin."); return; }
     const nameFinal = (full_name || "").trim() || "Personel";
-    try {
-      await apiPostJSON("/identities/bind", {
-        actor_key,
-        create_full_name: nameFinal,
-        create_department: department,
-        employee_id: employee_id?.trim() || null,
-        retro_days: 14,
-      });
-      setOk(employee_id?.trim() ? `Oluşturuldu ve bağlandı: ${employee_id.trim()}` : "Oluşturuldu ve bağlandı (otomatik RD-xxx)");
-      await load();
-    } catch (e: any) {
-      setErr(e?.message || "Oluştur/bağla başarısız");
-    }
+    await apiPostJSON("/identities/bind", {
+      actor_key,
+      create_full_name: nameFinal,
+      create_department: department,
+      employee_id: employee_id?.trim() || null,
+      retro_days: 14,
+    });
+    setOk(employee_id?.trim() ? `Oluşturuldu ve bağlandı: ${employee_id.trim()}` : "Oluşturuldu ve bağlandı (otomatik RD-xxx)");
+    await load();
   }
 
   return (
@@ -80,7 +76,7 @@ export default function IdentitiesPage() {
           <thead>
             <tr style={{ background: "#fafafa" }}>
               <th style={{ textAlign: "left", padding: 8 }}>actor_key</th>
-              <th style={{ textAlign: "left", padding: 8 }}>Telegram Kullanıcı Adı</th>
+              <th style={{ textAlign: "left", padding: 8 }}>İsim / Kullanıcı Adı</th>
               <th style={{ textAlign: "left", padding: 8 }}>Oluştur + Bağla</th>
             </tr>
           </thead>
@@ -88,26 +84,33 @@ export default function IdentitiesPage() {
             {rows.map((r) => {
               const keySafe = r.actor_key.replace(/[^a-zA-Z0-9@:_-]/g, "");
               const { uid, uname } = parseActor(r.actor_key);
+              // Görünüm: Önce hint_name (mesai adı veya webhook'tan düşen isim), yoksa username (@"siz), yoksa —
+              const displayName = (r.hint_name && r.hint_name.trim())
+                ? r.hint_name.trim()
+                : (uname ? uname.replace(/^@/, "") : "—");
 
               return (
                 <tr key={r.actor_key} style={{ borderTop: "1px solid #f1f1f1" }}>
                   <td style={{ padding: 8, fontFamily: "monospace" }}>{r.actor_key}</td>
-                  <td style={{ padding: 8 }}>{uname || "-"}</td>
+                  <td style={{ padding: 8 }}>{displayName}</td>
 
-                  {/* Tek form: yalnızca “Oluştur + Bağla” */}
                   <td style={{ padding: 8 }}>
                     <form
-                      onSubmit={(e) => {
+                      onSubmit={async (e) => {
                         e.preventDefault();
                         const emp  = (e.currentTarget.elements.namedItem(`newid_${keySafe}`) as HTMLInputElement).value.trim();
                         const name = (e.currentTarget.elements.namedItem(`newname_${keySafe}`) as HTMLInputElement).value.trim();
                         const dept = (e.currentTarget.elements.namedItem(`newdept_${keySafe}`) as HTMLSelectElement).value;
-                        createAndBind(r.actor_key, emp, name, dept);
+                        try {
+                          await createAndBind(r.actor_key, emp, name, dept);
+                        } catch (ex: any) {
+                          setErr(ex?.message || "Oluştur/bağla başarısız");
+                        }
                       }}
                     >
                       <div style={{ display: "grid", gridTemplateColumns: "200px 200px 180px auto", gap: 6, alignItems: "center" }}>
                         <input name={`newid_${keySafe}`} placeholder="(boş = otomatik RD-xxx)" />
-                        <input name={`newname_${keySafe}`} placeholder="Ad Soyad" defaultValue={r.hint_name || (uname ? uname.replace(/^@/,"") : "")} required />
+                        <input name={`newname_${keySafe}`} placeholder="Ad Soyad" defaultValue={displayName !== "—" ? displayName : ""} required />
                         <select name={`newdept_${keySafe}`} defaultValue="">
                           <option value="">Departman (seç)</option>
                           {DEPARTMENTS.map((d) => (<option key={d} value={d}>{d}</option>))}
