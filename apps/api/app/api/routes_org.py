@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, Query
+# apps/api/app/api/routes_org.py
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from app.deps import get_db, RolesAllowed
 from app.models.models import Team, Employee
-from app.schemas.org import TeamOut, EmployeeOut
+from app.schemas.org import TeamOut, EmployeeOut, EmployeeUpdateIn
 
 router = APIRouter(tags=["org"])
 
@@ -25,3 +26,29 @@ def list_employees(
     if team_id:
         qry = qry.filter(Employee.team_id == team_id)
     return qry.order_by(Employee.full_name).offset(offset).limit(limit).all()
+
+@router.get("/employees/{employee_id}", response_model=EmployeeOut, dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))])
+def get_employee(employee_id: str, db: Session = Depends(get_db)):
+    emp = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="employee not found")
+    return emp
+
+@router.patch("/employees/{employee_id}", response_model=EmployeeOut, dependencies=[Depends(RolesAllowed("super_admin","admin"))])
+def update_employee(employee_id: str, body: EmployeeUpdateIn, db: Session = Depends(get_db)):
+    emp = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="employee not found")
+
+    # Sadece gönderilen alanları güncelle
+    data = body.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        # Modelinde olmayan alanlar tanımlıysa (telegram_username/uid/phone/salary_gross/notes),
+        # Employee modeline eklendiyse çalışır; eklenmediyse sessiz geçilir.
+        if hasattr(emp, k):
+            setattr(emp, k, v)
+
+    db.add(emp)
+    db.commit()
+    db.refresh(emp)
+    return emp
