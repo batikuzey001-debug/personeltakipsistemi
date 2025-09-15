@@ -33,8 +33,8 @@ def _sign_emoji(pct: float | None) -> str:
 
 def _root_origin_ts(chat_id: int, start_msg_id: int, db: Session, cache: Dict[Tuple[int,int], datetime | None]) -> datetime | None:
     """
-    Reply zincirini yukarı doğru takip ederek KÖK origin mesajının zamanını döndürür.
-    RawMessage.json içindeki reply_to_message.message_id alanını kullanır.
+    Reply zincirini yukarı takip ederek KÖK origin zamanını döndürür.
+    RawMessage.json içindeki reply_to_message.message_id alanı kullanılır.
     """
     current_id = start_msg_id
     visited = set()
@@ -86,22 +86,22 @@ def bonus_close_time(
 ):
     """
     BONUS departmanı için (employees.department='Bonus') kişi bazlı rapor.
-    Sütunlar:
-      - personel
-      - işlem sayısı (close tipleri adedi)
-      - Ø İlk Yanıt (sn): kişinin reply_first.ts - KÖK origin.ts
-      - Ø Sonuçlandırma (sn): kişinin close.ts - KÖK origin.ts
-      - Trend: kişinin Ø sonuçlandırması, ekip Ø sonuçlandırmasına göre (% ve emoji)
-    Kurallar:
-      - close tipleri: reply_close, approve, reject
-      - KÖK origin, reply zinciri en baştaki mesajdır (reply_to_message zinciri takip edilir).
-      - employee_id eşleşmiş kayıtlar ve department='Bonus' dikkate alınır.
+    - İşlem Sayısı = close tipleri adedi (reply_close/approve/reject)
+    - Ø İlk Yanıt (sn) = kişinin reply_first.ts − kök origin.ts
+    - Ø Sonuçlandırma (sn) = kişinin close.ts − kök origin.ts
+    - Trend = kişinin Ø Sonuçlandırma (seçilen aralık) vs **EKİP Ø Son 7 Gün**
     """
+    # Seçilen aralık (kişisel metrikler)
     dt_to = _parse_date(to) or (datetime.now(timezone.utc) + timedelta(days=1))
     dt_from = _parse_date(frm) or (dt_to - timedelta(days=7))
 
+    # Trend için baz aralık (her zaman SON 7 GÜN)
+    trend_to = datetime.now(timezone.utc) + timedelta(days=1)
+    trend_from = trend_to - timedelta(days=7)
+
     # Bonus departmanındaki personeller
-    bonus_emp_rows = db.query(Employee.employee_id, Employee.full_name, Employee.department).filter(Employee.department == "Bonus").all()
+    bonus_emp_rows = db.query(Employee.employee_id, Employee.full_name, Employee.department)\
+                       .filter(Employee.department == "Bonus").all()
     bonus_emp_ids = {r[0] for r in bonus_emp_rows}
     emp_info = {r[0]: (r[1] or r[0], r[2] or "Bonus") for r in bonus_emp_rows}
     if not bonus_emp_ids:
@@ -109,7 +109,7 @@ def bonus_close_time(
 
     close_types = ("reply_close", "approve", "reject")
 
-    # first ve close eventleri (bonus + employee_id var + tarih)
+    # first ve close eventleri (seçili aralık)
     first_rows: List[Event] = (
         db.query(Event)
         .filter(
@@ -169,9 +169,30 @@ def bonus_close_time(
     if not per_emp_close_secs:
         return []
 
-    # ekip Ø (close)
-    all_close = [s for arr in per_emp_close_secs.values() for s in arr]
-    team_avg_close_sec = mean(all_close) if all_close else None
+    # ------- Ekip Ø SON 7 GÜN (trend için sabit baz) -------
+    team_close_trend_rows: List[Event] = (
+        db.query(Event)
+        .filter(
+            Event.source_channel == "bonus",
+            Event.type.in_(close_types),
+            Event.employee_id.isnot(None),
+            Event.employee_id.in_(bonus_emp_ids),
+            Event.ts >= trend_from,
+            Event.ts < trend_to,
+        )
+        .all()
+    )
+    team_root_cache: Dict[Tuple[int,int], datetime | None] = {}
+    team_secs: List[float] = []
+    for e in team_close_trend_rows:
+        rts = _root_origin_ts(e.chat_id, e.msg_id, db, team_root_cache)
+        if not rts:
+            continue
+        sec = (e.ts - rts).total_seconds()
+        if sec >= 0:
+            team_secs.append(sec)
+    team_avg_close_sec = mean(team_secs) if team_secs else None
+    # -------------------------------------------------------
 
     # satırlar
     rows = []
@@ -189,11 +210,11 @@ def bonus_close_time(
             "full_name": full_name,
             "department": dept,
             "count_total": len(close_secs),                              # İşlem Sayısı
-            "avg_first_sec": int(round(avg_first_sec)) if avg_first_sec is not None else None,  # saniye (tam sayı)
-            "avg_close_sec": int(round(avg_close_sec)),                  # saniye (tam sayı)
+            "avg_first_sec": int(round(avg_first_sec)) if avg_first_sec is not None else None,  # sn (tam sayı)
+            "avg_close_sec": int(round(avg_close_sec)),                  # sn (tam sayı)
             "trend": {
                 "emoji": _sign_emoji(trend_pct),
-                "pct": trend_pct,
+                "pct": trend_pct,                                        # kişinin ort. sonuç vs EKİP Ø son 7 gün
                 "team_avg_close_sec": int(round(team_avg_close_sec)) if team_avg_close_sec else None,
             }
         })
