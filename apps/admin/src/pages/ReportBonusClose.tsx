@@ -4,16 +4,15 @@ import { Link } from "react-router-dom";
 
 const API = import.meta.env.VITE_API_BASE_URL as string;
 
+type Trend = { emoji: string; pct: number | null; team_avg_close_sec: number | null };
 type Row = {
   employee_id: string;
   full_name: string;
   department: string;
-  count_closed: number;
-  avg_close_min: number;
-  p50_close_min: number;
-  p90_close_min: number;
-  first_close_ts: string | null;
-  last_close_ts: string | null;
+  count_total: number;      // İşlem Sayısı
+  avg_first_sec: number | null; // Ø İlk Yanıt (sn)
+  avg_close_sec: number;    // Ø Sonuçlandırma (sn)
+  trend: Trend;             // Trend (ekip karşılaştırma)
 };
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -52,15 +51,15 @@ export default function ReportBonusClose() {
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      <h1>Bonus • Kapanış Süresi Raporu</h1>
+      <h1>Bonus • Kapanış Süresi (Kişi Bazlı)</h1>
 
       <form onSubmit={(e)=>{e.preventDefault(); load();}} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <input type="date" value={from} onChange={(e)=>setFrom(e.target.value)} />
         <input type="date" value={to} onChange={(e)=>setTo(e.target.value)} />
         <select value={order} onChange={(e)=>setOrder(e.target.value as any)}>
-          <option value="avg_asc">Ortalama (artan)</option>
-          <option value="avg_desc">Ortalama (azalan)</option>
-          <option value="cnt_desc">Kapanan İş (çoktan aza)</option>
+          <option value="avg_asc">Ø Sonuçlandırma (artan)</option>
+          <option value="avg_desc">Ø Sonuçlandırma (azalan)</option>
+          <option value="cnt_desc">İşlem Sayısı (çoktan aza)</option>
         </select>
         <button type="submit" disabled={loading}>{loading ? "Yükleniyor…" : "Listele"}</button>
         {err && <span style={{ color: "#b00020", fontSize: 12 }}>{err}</span>}
@@ -71,12 +70,11 @@ export default function ReportBonusClose() {
           <thead>
             <tr style={{ background: "#fafafa" }}>
               <th style={{ textAlign: "left", padding: 8 }}>Personel</th>
-              <th style={{ textAlign: "left", padding: 8 }}>Kapanan İş</th>
-              <th style={{ textAlign: "left", padding: 8 }}>Ortalama (dk)</th>
-              <th style={{ textAlign: "left", padding: 8 }}>Median</th>
-              <th style={{ textAlign: "left", padding: 8 }}>P90</th>
-              <th style={{ textAlign: "left", padding: 8 }}>Son Kapanış</th>
-              <th style={{ textAlign: "left", padding: 8 }}>Kişi</th>
+              <th style={{ textAlign: "right", padding: 8, width: 120 }}>İşlem Sayısı</th>
+              <th style={{ textAlign: "right", padding: 8, width: 160 }}>Ø İlk Yanıt (sn)</th>
+              <th style={{ textAlign: "right", padding: 8, width: 180 }}>Ø Sonuçlandırma (sn)</th>
+              <th style={{ textAlign: "left", padding: 8, width: 140 }}>Trend</th>
+              <th style={{ textAlign: "left", padding: 8, width: 120 }}>Kişi</th>
             </tr>
           </thead>
           <tbody>
@@ -86,18 +84,20 @@ export default function ReportBonusClose() {
                   <div style={{ fontWeight: 600 }}>{r.full_name}</div>
                   <div style={{ fontSize: 12, color: "#666" }}>{r.employee_id} • {r.department}</div>
                 </td>
-                <td style={{ padding: 8 }}>{r.count_closed}</td>
-                <td style={{ padding: 8 }}>{r.avg_close_min}</td>
-                <td style={{ padding: 8 }}>{r.p50_close_min}</td>
-                <td style={{ padding: 8 }}>{r.p90_close_min}</td>
-                <td style={{ padding: 8 }}>{r.last_close_ts ? new Date(r.last_close_ts).toLocaleString() : "—"}</td>
+                <td style={{ padding: 8, textAlign: "right" }}>{r.count_total}</td>
+                <td style={{ padding: 8, textAlign: "right" }}>{r.avg_first_sec ?? "—"}</td>
+                <td style={{ padding: 8, textAlign: "right" }}>{r.avg_close_sec}</td>
+                <td style={{ padding: 8 }}>
+                  {r.trend.emoji}{" "}
+                  {r.trend.pct === null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}
+                </td>
                 <td style={{ padding: 8 }}>
                   <Link to={`/employees/${encodeURIComponent(r.employee_id)}?tab=activity`}>Kişi sayfası</Link>
                 </td>
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={7} style={{ padding: 12, color: "#777" }}>Kayıt yok.</td></tr>
+              <tr><td colSpan={6} style={{ padding: 12, color: "#777" }}>Kayıt yok.</td></tr>
             )}
           </tbody>
         </table>
