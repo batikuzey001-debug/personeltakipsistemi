@@ -34,7 +34,8 @@ def get_employee(employee_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="employee not found")
     return emp
 
-@router.patch("/employees/{employee_id}", response_model=EmployeeOut, dependencies=[Depends(RolesAllowed("super_admin","admin"))])
+# PATCH: artık SADECE super_admin
+@router.patch("/employees/{employee_id}", response_model=EmployeeOut, dependencies=[Depends(RolesAllowed("super_admin"))])
 def update_employee(employee_id: str, body: EmployeeUpdateIn, db: Session = Depends(get_db)):
     emp = db.query(Employee).filter(Employee.employee_id == employee_id).first()
     if not emp:
@@ -44,6 +45,7 @@ def update_employee(employee_id: str, body: EmployeeUpdateIn, db: Session = Depe
     for k, v in data.items():
         if hasattr(emp, k):
             setattr(emp, k, v)
+
     db.add(emp)
     db.commit()
     db.refresh(emp)
