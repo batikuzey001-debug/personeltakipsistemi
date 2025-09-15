@@ -14,7 +14,7 @@ def list_teams(db: Session = Depends(get_db)):
 @router.get("/employees", response_model=list[EmployeeOut], dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))])
 def list_employees(
     q: str | None = None,
-    team_id: int | None = None,
+    department: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db)
@@ -23,8 +23,8 @@ def list_employees(
     if q:
         like = f"%{q}%"
         qry = qry.filter((Employee.full_name.ilike(like)) | (Employee.email.ilike(like)))
-    if team_id:
-        qry = qry.filter(Employee.team_id == team_id)
+    if department:
+        qry = qry.filter(Employee.department == department)
     return qry.order_by(Employee.full_name).offset(offset).limit(limit).all()
 
 @router.get("/employees/{employee_id}", response_model=EmployeeOut, dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))])
@@ -44,7 +44,6 @@ def update_employee(employee_id: str, body: EmployeeUpdateIn, db: Session = Depe
     for k, v in data.items():
         if hasattr(emp, k):
             setattr(emp, k, v)
-
     db.add(emp)
     db.commit()
     db.refresh(emp)
