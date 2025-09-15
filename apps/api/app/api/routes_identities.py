@@ -24,10 +24,6 @@ def _parse_actor_key(key: str):
     return (None, None)
 
 def _next_rd_id(db: Session) -> str:
-    """
-    RD-001, RD-002 ... şeklinde artan kimlik üret.
-    Lexicographic doğru çalışsın diye 3 haneli padding kullanıyoruz.
-    """
     last = (
         db.query(Employee)
         .filter(Employee.employee_id.like("RD-%"))
@@ -72,10 +68,10 @@ def list_pending(
 def bind_identity(
     actor_key: str = Query(..., description="uid:123 veya uname:@nick"),
     employee_id: str | None = Query(None, description="Var olan employee_id; boşsa RD-xxx otomatik atanır"),
-    create_full_name: str | None = Query(None, description="Yeni oluşturulacak personelin adı (boşsa hint_name)"),
-    create_team: str | None = Query(None),
-    create_title: str | None = Query(None),
-    create_email: str | None = Query(None),
+    create_full_name: str | None = Query(None, description="Yeni personel adı (boşsa hint_name)"),
+    # UI'da 'Departman' gösteriyoruz; backend param adını geriye dönük uyumluluk için her ikisini de kabul edelim:
+    create_department: str | None = Query(None, description="Departman (Call Center/Canlı/Finans/Bonus/Admin)"),
+    create_team: str | None = Query(None, description="(deprecated) team → department"),
     retro_days: int = Query(14, ge=0, le=60, description="Geriye dönük gün sayısı (eventlere employee_id yaz)"),
     db: Session = Depends(get_db),
 ):
@@ -84,42 +80,63 @@ def bind_identity(
     if not rec:
         raise HTTPException(status_code=404, detail="identity not found")
 
-    # 2) Hedef employee (var olan ya da yeni)
+    # 2) Actor bilgileri → telegram alanları
+    kind, val = _parse_actor_key(actor_key)
+    tg_uid = val if kind == "uid" else None
+    tg_uname = actor_key.split(":", 1)[1] if kind == "uname" else None
+
+    # 3) Departman belirle (team ismini departmana eşle, create_department öncelikli)
+    department = create_department or create_team  # create_team eskiden geliyordu
+
+    # 4) Hedef employee (var olan ya da yeni)
     if employee_id:  # mevcut bir kayda bağla
         emp = db.query(Employee).filter(Employee.employee_id == employee_id).first()
         if not emp:
             raise HTTPException(status_code=404, detail="employee not found")
+        # Telegram alanları boşsa actor_key ile doldur
+        updated = False
+        if tg_uid and (not getattr(emp, "telegram_user_id", None)):
+            emp.telegram_user_id = tg_uid; updated = True
+        if tg_uname and (not getattr(emp, "telegram_username", None)):
+            emp.telegram_username = tg_uname; updated = True
+        if department and getattr(emp, "department", None) in (None, ""):
+            emp.department = department; updated = True
+        if updated:
+            db.add(emp)
     else:
         # RD-xxx üret
         emp_id = _next_rd_id(db)
-        full_name = create_full_name or rec.hint_name or f"Personel {emp_id}"
-        if len(full_name.strip()) == 0:
-            full_name = f"Personel {emp_id}"
+        full_name = (create_full_name or rec.hint_name or f"Personel {emp_id}").strip() or f"Personel {emp_id}"
+        # oluştur
         emp = Employee(
             employee_id=emp_id,
-            full_name=full_name.strip(),
-            email=create_email,
-            team_id=None,  # v1: team bağlama daha sonra yapılacak
-            title=create_title,
+            full_name=full_name,
+            email=None,
+            department=department,          # Takım yerine departman
+            title=None,
             hired_at=None,
             status="active",
+            telegram_user_id=tg_uid,
+            telegram_username=(tg_uname.lstrip("@") if tg_uname else None),
+            phone=None,
+            salary_gross=None,
+            notes=None,
         )
         db.add(emp)
         db.flush()  # employee_id hazır
 
-    # 3) Identity'yi onayla
+    # 5) Identity'yi onayla
     rec.employee_id = emp.employee_id
     rec.status = "confirmed"
     db.add(rec)
 
-    # 4) Geriye dönük eventlere employee_id yaz
-    kind, val = _parse_actor_key(actor_key)
+    # 6) Geriye dönük eventlere employee_id yaz
     if kind and retro_days > 0:
         since = datetime.now(timezone.utc) - timedelta(days=retro_days)
         if kind == "uid":
-            q = db.query(Event).filter(and_(Event.from_user_id == val, Event.ts >= since))
+            q = db.query(Event).filter(and_(Event.from_user_id == tg_uid, Event.ts >= since))
         else:
-            q = db.query(Event).filter(and_(Event.from_username == val, Event.ts >= since))
+            q = db.query(Event).filter(and_(Event.from_username == tg_uname, Event.ts >= since))
         for e in q.all():
             if not e.employee_id:
                 e.employee_id = emp.employee_id
@@ -127,143 +144,3 @@ def bind_identity(
 
     db.commit()
     return {"ok": True, "actor_key": actor_key, "employee_id": emp.employee_id, "retro_days": retro_days}
-
-@router.api_route("/backfill-from-events", methods=["GET", "POST"], dependencies=[Depends(RolesAllowed("super_admin", "admin"))])
-def backfill_from_events(
-    since_days: int = Query(90, ge=0, le=365, description="Kaç gün geriye bakılacak (0 = tüm veriler)"),
-    auto_create: bool = Query(False, description="True ise RD-xxx ile yeni employee taslakları oluşturup bağlar"),
-    db: Session = Depends(get_db),
-):
-    """
-    Geçmiş events'ten actor_key üretir:
-      - identities.pending kayıtları ekler (yoksa)
-      - mesai payload'ından 'person' alanını hint_name olarak alır
-      - (YENİ) Mesai'de isim yoksa username'i hint_name yapar
-      - auto_create=True ise: RD-xxx ile yeni employee oluşturup identity'yi confirmed yapar
-    """
-    # 1) zaman filtresi
-    since_ts = None
-    if since_days > 0:
-        since_ts = datetime.now(timezone.utc) - timedelta(days=since_days)
-
-    # 2) eventleri çek
-    q = db.query(Event.from_user_id, Event.from_username, Event.source_channel, Event.payload_json, Event.ts)
-    if since_ts:
-        q = q.filter(Event.ts >= since_ts)
-    q = q.order_by(Event.ts.desc())
-    evs = q.all()
-
-    # 3) var olan keys
-    existing_keys = {r.actor_key for r in db.query(EmployeeIdentity.actor_key).all()}
-
-    found: dict[str, tuple[str | None, str | None]] = {}
-
-    for uid, uname, ch, payload, _ in evs:
-        # actor_key
-        key = None
-        if uid:
-            key = f"uid:{uid}"
-        elif uname:
-            key = f"uname:{uname}"
-        if not key or key in existing_keys or key in found:
-            continue
-
-        # hint: mesai person adı > yoksa username
-        hint_name = None
-        if ch == "mesai":
-            try:
-                hint_name = (payload or {}).get("person") or None
-            except Exception:
-                hint_name = None
-        if not hint_name and uname:
-            hint_name = str(uname).lstrip("@")
-
-        found[key] = (hint_name, ch)
-
-    pending_inserted = 0
-    auto_created = 0
-
-    for key, (hint_name, _ch) in found.items():
-        if not auto_create:
-            db.add(EmployeeIdentity(actor_key=key, status="pending", hint_name=hint_name))
-            pending_inserted += 1
-        else:
-            # RD-xxx üret ve taslak oluştur
-            emp_id = _next_rd_id(db)
-            full_name = (hint_name or f"Personel {emp_id}").strip()
-            emp = Employee(
-                employee_id=emp_id,
-                full_name=full_name,
-                email=None,
-                team_id=None,
-                title=None,
-                hired_at=None,
-                status="active",
-            )
-            db.add(emp)
-            db.flush()
-            db.add(EmployeeIdentity(actor_key=key, employee_id=emp.employee_id, status="confirmed", hint_name=hint_name))
-            auto_created += 1
-
-    db.commit()
-    return {
-        "ok": True,
-        "since_days": since_days,
-        "pending_inserted": pending_inserted,
-        "auto_created_employees": auto_created,
-        "scanned_events": len(evs),
-        "new_actor_keys": len(found),
-    }
-@router.post("/enrich-hints", dependencies=[Depends(RolesAllowed("super_admin","admin"))])
-def enrich_hints_for_pending(
-    since_days: int = Query(365, ge=0, le=3650),
-    db: Session = Depends(get_db),
-):
-    """
-    Daha önce oluşmuş pending kimliklerin hint_name alanını,
-    son event'lerdeki mesai 'person' veya username ile doldurur.
-    """
-    # pending kayıtları çek
-    pendings = db.query(EmployeeIdentity).filter(EmployeeIdentity.status == "pending").all()
-    if not pendings:
-        return {"ok": True, "updated": 0}
-
-    since_ts = None
-    if since_days > 0:
-        since_ts = datetime.now(timezone.utc) - timedelta(days=since_days)
-
-    updated = 0
-    for rec in pendings:
-        kind, val = _parse_actor_key(rec.actor_key)
-        if not kind or rec.hint_name:  # zaten isim varsa atla
-            continue
-
-        q = db.query(Event).order_by(Event.ts.desc())
-        if kind == "uid":
-            q = q.filter(Event.from_user_id == val)
-        else:
-            q = q.filter(Event.from_username == val)
-        if since_ts:
-            q = q.filter(Event.ts >= since_ts)
-
-        ev = q.first()
-        if not ev:
-            continue
-
-        # Önce mesai 'person' dene; yoksa username kullan
-        hint = None
-        if ev.source_channel == "mesai":
-            try:
-                hint = (ev.payload_json or {}).get("person") or None
-            except Exception:
-                hint = None
-        if not hint and ev.from_username:
-            hint = ev.from_username.lstrip("@")
-
-        if hint:
-            rec.hint_name = hint
-            db.add(rec)
-            updated += 1
-
-    db.commit()
-    return {"ok": True, "updated": updated}
