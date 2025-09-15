@@ -7,7 +7,8 @@ import KPIs from "./pages/KPIs";
 import Scores from "./pages/Scores";
 import Users from "./pages/Users";
 import IdentitiesPage from "./pages/Identities";
-import EmployeeDetail from "./pages/EmployeeDetail";
+import EmployeeDetail from "./pages/EmployeeDetail";   // eski genel detay (istersen kullan)
+import EmployeeProfile from "./pages/EmployeeProfile";  // YENİ: Kişi sayfası
 import Layout from "./components/Layout";
 import { RequireRole } from "./lib/auth";
 
@@ -20,79 +21,23 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
 
-      <Route
-        path="/dashboard"
-        element={
-          <Protected>
-            <Layout>
-              <Dashboard />
-            </Layout>
-          </Protected>
-        }
-      />
+      <Route path="/dashboard" element={<Protected><Layout><Dashboard /></Layout></Protected>} />
+      <Route path="/employees" element={<Protected><Layout><Employees /></Layout></Protected>} />
+      <Route path="/kpis" element={<Protected><Layout><KPIs /></Layout></Protected>} />
+      <Route path="/scores" element={<Protected><Layout><Scores /></Layout></Protected>} />
+      <Route path="/users" element={<Protected><Layout><Users /></Layout></Protected>} />
+      <Route path="/identities" element={<Protected><Layout><IdentitiesPage /></Layout></Protected>} />
 
-      <Route
-        path="/employees"
-        element={
-          <Protected>
-            <Layout>
-              <Employees />
-            </Layout>
-          </Protected>
-        }
-      />
+      {/* Eski genel sayfa (opsiyonel) */}
+      <Route path="/employee-detail" element={<Protected><Layout><EmployeeDetail /></Layout></Protected>} />
 
+      {/* YENİ: Kişi profili /employees/:employee_id */}
       <Route
-        path="/kpis"
+        path="/employees/:employee_id"
         element={
           <Protected>
             <Layout>
-              <KPIs />
-            </Layout>
-          </Protected>
-        }
-      />
-
-      <Route
-        path="/scores"
-        element={
-          <Protected>
-            <Layout>
-              <Scores />
-            </Layout>
-          </Protected>
-        }
-      />
-
-      <Route
-        path="/users"
-        element={
-          <Protected>
-            <Layout>
-              <Users />
-            </Layout>
-          </Protected>
-        }
-      />
-
-      <Route
-        path="/identities"
-        element={
-          <Protected>
-            <Layout>
-              <IdentitiesPage />
-            </Layout>
-          </Protected>
-        }
-      />
-
-      {/* Personel Detay rotası */}
-      <Route
-        path="/employee-detail"
-        element={
-          <Protected>
-            <Layout>
-              <EmployeeDetail />
+              <EmployeeProfile />
             </Layout>
           </Protected>
         }
