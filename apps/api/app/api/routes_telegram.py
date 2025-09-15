@@ -8,7 +8,7 @@ from app.deps import get_db
 from app.core.config import settings
 from app.models.events import RawMessage, Event
 
-# Kimlik eşleme yardımcıları (actor_key üret, pending kaydı aç, confirmed kontrol)
+# Kimlik eşleme yardımcıları
 from app.services.identity_resolver import (
     actor_key as make_key,
     resolve_employee_id,
@@ -19,8 +19,8 @@ router = APIRouter(prefix="/integrations/telegram", tags=["integrations"])
 
 def _norm(s: str) -> str:
     return (s or "").lower()\
-        .replace("ı", "i").replace("ş", "s").replace("ğ", "g")\
-        .replace("ç", "c").replace("ö", "o").replace("ü", "u")
+        .replace("ı","i").replace("ş","s").replace("ğ","g")\
+        .replace("ç","c").replace("ö","o").replace("ü","u")
 
 def _first_match(text: str) -> bool:
     s = _norm(text)
@@ -36,13 +36,8 @@ def _first_match(text: str) -> bool:
 APPROVE_PAT = [r"\bonay\b", r"onayland[ıi]", r"\btamam\b", r"\bok\b", "✅", "👍"]
 REJECT_PAT  = [r"\bred\b", r"\biptal\b", r"\bolumsuz\b", r"\bhata\b", "❌", "🚫"]
 
-def _is_approve(text: str) -> bool:
-    s = _norm(text)
-    return any(re.search(p, s) for p in APPROVE_PAT)
-
-def _is_reject(text: str) -> bool:
-    s = _norm(text)
-    return any(re.search(p, s) for p in REJECT_PAT)
+def _is_approve(text: str) -> bool: return any(re.search(p, _norm(text)) for p in APPROVE_PAT)
+def _is_reject(text: str) -> bool:  return any(re.search(p, _norm(text)) for p in REJECT_PAT)
 
 def _idset(csv: str) -> set[int]:
     return set(int(x.strip()) for x in (csv or "").split(",") if x.strip())
@@ -72,11 +67,17 @@ async def webhook(secret: str, request: Request, db: Session = Depends(get_db)):
     if not msg:
         return {"ok": True}
 
-    chat_id  = int((msg.get("chat") or {}).get("id"))
-    msg_id   = int(msg.get("message_id"))
+    chat_id = int((msg.get("chat") or {}).get("id"))
+    msg_id  = int(msg.get("message_id"))
+
+    # Kullanıcı bilgileri
     from_user   = msg.get("from") or {}
     from_uid    = from_user.get("id")
     from_uname  = ("@" + from_user.get("username")) if from_user.get("username") else None
+    from_first  = (from_user.get("first_name") or "").strip()
+    from_last   = (from_user.get("last_name") or "").strip()
+    from_full   = (from_first + " " + from_last).strip() or None
+
     text        = (msg.get("text") or msg.get("caption") or "")[:2000]
     ts          = datetime.fromtimestamp(int(msg.get("date", 0)), tz=timezone.utc)
     kind        = "reply" if msg.get("reply_to_message") else "msg"
@@ -101,80 +102,57 @@ async def webhook(secret: str, request: Request, db: Session = Depends(get_db)):
     origin_id = origin.get("message_id") if origin else msg_id
     correlation_id = f"{chat_id}:{origin_id}"
 
-    # ---- classify
+    # ---- sınıflandırma + isim ipucu
     text_norm = (text or "").strip()
-
-    # İsim ipucu (mesai mesajından kişi adı; yoksa username)
     name_hint = None
-    if channel_tag == "mesai":
-        # Örn: "13.09.25 Ali Giriş 00/08" veya "13/09/2025 Teoman Çıkış 08:16"
+
+    if channel_tag in ("bonus", "finans"):
+        if not origin:
+            ev_type, payload = "origin", {"talep_text": text_norm}
+        else:
+            if _first_match(text_norm): ev_type = "reply_first"
+            elif _is_reject(text_norm): ev_type = "reject"
+            elif _is_approve(text_norm): ev_type = "approve"
+            else: ev_type = "reply_close"
+            payload = {"text": text_norm}
+
+    elif channel_tag == "mesai":
+        # "13.09.25 Ali Giriş 00/08" veya "13/09/2025 Teoman Çıkış 08:16"
         m = re.match(
             r"(?P<d>\d{1,2}[./]\d{1,2}[./]\d{2,4})\s+(?P<name>.+?)\s+(?P<op>G[İi]riş|Giris|GIRIS|giriş|G[çÇ]ıkış|C[ıi]kış|Çıkış|Cikis|çıkış)\s+(?P<h1>\d{1,2})[/:](?P<h2>\d{1,2})",
             text_norm
         )
         if m:
-            dstr = m.group("d").replace("/", ".")
-            dd, mm, yy = dstr.split(".")
-            yy = int(yy)
-            if yy < 100: yy += 2000
-            try:
-                parsed_day_iso = datetime(yy, int(mm), int(dd), tzinfo=timezone.utc).date().isoformat()
-            except ValueError:
-                parsed_day_iso = None
-
             raw_op = _norm(m.group("op"))
             is_giris = "giris" in raw_op
             ev_type = "check_in" if is_giris else "check_out"
 
             h1 = int(m.group("h1")); h2 = int(m.group("h2"))
-            plan_start = f"{h1:02d}:00"
-            plan_end   = f"{h2:02d}:00"
-
             payload = {
                 "person": m.group("name").strip(),
-                "plan_start": plan_start,
-                "plan_end": plan_end,
-                "day": parsed_day_iso,
+                "plan_start": f"{h1:02d}:00",
+                "plan_end":   f"{h2:02d}:00",
                 "raw": text_norm,
             }
             name_hint = payload["person"]
         else:
             ev_type, payload = "note", {"text": text_norm}
 
-    # Mesai dışında veya parser isim bulamadıysa username'i ipucu kullan
-    if not name_hint and from_uname:
-        name_hint = from_uname.lstrip("@")
-
-    # Actor key üret ve confirmed eşleşme var mı kontrol et
-    key = make_key(from_uid, from_uname)
-    employee_id = resolve_employee_id(db, key) if key != "unknown" else None
-    # Eşleşme yoksa pending kimlik oluştur (isim ipucunu ekle)
-    if not employee_id and key != "unknown":
-        ensure_pending(db, key, name_hint=name_hint, team_hint=None)
-
-    # Bonus/Finans sınıflaması
-    if channel_tag in ("bonus", "finans"):
-        if not origin:
-            ev_type, payload = "origin", {"talep_text": text_norm}
-        else:
-            if _first_match(text_norm):
-                ev_type = "reply_first"
-            elif _is_reject(text_norm):
-                ev_type = "reject"
-            elif _is_approve(text_norm):
-                ev_type = "approve"
-            else:
-                ev_type = "reply_close"
-            payload = {"text": text_norm}
-
-    # Mesai için, yukarıda parser set etmediyse generic note gönder
-    elif channel_tag == "mesai":
-        if 'ev_type' not in locals():
-            ev_type, payload = "note", {"text": text_norm}
     else:
         ev_type, payload = "note", {"text": text_norm}
 
-    # events (idempotent corr_id+type)
+    # İsim ipucu: Mesai’den kişi adı çıkmadıysa @username, o da yoksa first+last
+    if not name_hint:
+        if from_uname:   name_hint = from_uname.lstrip("@")
+        elif from_full:  name_hint = from_full
+
+    # Kimlik atama
+    key = make_key(from_uid, from_uname)
+    employee_id = resolve_employee_id(db, key) if key != "unknown" else None
+    if not employee_id and key != "unknown":
+        ensure_pending(db, key, name_hint=name_hint, team_hint=None)
+
+    # events (idempotent)
     exists = db.query(Event).filter_by(correlation_id=correlation_id, type=ev_type).first()
     if not exists:
         db.add(Event(
