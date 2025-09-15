@@ -1,181 +1,214 @@
-// apps/admin/src/pages/ReportBonusClose.tsx
-import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+# apps/api/app/api/routes_reports.py
+from fastapi import APIRouter, Depends, Query, HTTPException
+from sqlalchemy.orm import Session
+from sqlalchemy import and_
+from datetime import datetime, timedelta, timezone
+from statistics import mean
+from typing import Literal, Dict, List, Tuple
 
-const API = import.meta.env.VITE_API_BASE_URL as string;
+from app.deps import get_db, RolesAllowed
+from app.models.events import Event, RawMessage
+from app.models.models import Employee
 
-type Trend = { emoji: string; pct: number | null; team_avg_close_sec: number | null };
-type Row = {
-  employee_id: string;
-  full_name: string;
-  department: string;
-  count_total: number;      // İşlem Sayısı
-  avg_first_sec: number | null; // Ø İlk Yanıt (sn)
-  avg_close_sec: number;    // Ø Sonuçlandırma (sn)
-  trend: Trend;             // Trend (ekip karşılaştırma)
-};
+router = APIRouter(prefix="/reports", tags=["reports"])
 
-async function apiGet<T>(path: string): Promise<T> {
-  const token = localStorage.getItem("token") || "";
-  const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!r.ok) throw new Error(await r.text());
-  return (await r.json()) as T;
-}
+# ---------- helpers ----------
+def _parse_date(s: str | None):
+    if not s:
+        return None
+    try:
+        d = datetime.strptime(s, "%Y-%m-%d")
+        return d.replace(tzinfo=timezone.utc)
+    except Exception:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
 
-export default function ReportBonusClose() {
-  const [rows, setRows] = useState<Row[]>([]);
-  const [from, setFrom] = useState<string>("");
-  const [to, setTo] = useState<string>("");
-  const [order, setOrder] = useState<"avg_asc" | "avg_desc" | "cnt_desc">("avg_asc");
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+def _sign_emoji(pct: float | None) -> str:
+    if pct is None:
+        return "⚪"
+    if pct > 3:
+        return "🔴⬆️"
+    if pct < -3:
+        return "🟢⬇️"
+    return "⚪"  # ±3%
 
-  async function load() {
-    setErr(null); setLoading(true);
-    try {
-      const qs = new URLSearchParams();
-      if (from) qs.set("frm", from);
-      if (to) qs.set("to", to);
-      qs.set("order", order);
-      qs.set("limit", "200");
-      const data = await apiGet<Row[]>(`/reports/bonus/close-time?${qs.toString()}`);
-      setRows(data);
-    } catch (e: any) {
-      setErr(e?.message || "Rapor alınamadı");
-    } finally {
-      setLoading(false);
-    }
-  }
+def _root_origin_ts(chat_id: int, start_msg_id: int, db: Session, cache: Dict[Tuple[int,int], datetime | None]) -> datetime | None:
+    """
+    Reply zincirini yukarı doğru takip ederek KÖK origin mesajının zamanını döndürür.
+    RawMessage.json içindeki reply_to_message.message_id alanını kullanır.
+    """
+    current_id = start_msg_id
+    visited = set()
+    while True:
+        key = (chat_id, current_id)
+        if key in cache:
+            return cache[key]
+        if key in visited:  # güvenlik
+            cache[key] = None
+            return None
+        visited.add(key)
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+        raw: RawMessage | None = (
+            db.query(RawMessage)
+            .filter(RawMessage.chat_id == chat_id, RawMessage.msg_id == current_id)
+            .first()
+        )
+        if not raw:
+            cache[key] = None
+            return None
 
-  // ----- STYLES (sıkı ve tutarlı) -----
-  const container: React.CSSProperties = {
-    maxWidth: 1200,
-    margin: "0 auto",
-    padding: 12,
-    display: "grid",
-    gap: 12,
-  };
-  const card: React.CSSProperties = {
-    border: "1px solid #e9e9e9",
-    borderRadius: 12,
-    background: "#fff",
-    overflow: "hidden",
-  };
-  const th: React.CSSProperties = {
-    position: "sticky",
-    top: 0,
-    background: "#fff",
-    borderBottom: "1px solid #eee",
-    fontWeight: 600,
-    fontSize: 13,
-    padding: "6px 10px",
-    textAlign: "left",
-    whiteSpace: "nowrap",
-  };
-  const tdLeft: React.CSSProperties = {
-    padding: "6px 10px",
-    fontSize: 13,
-    textAlign: "left",
-    verticalAlign: "middle",
-  };
-  const tdRight: React.CSSProperties = {
-    padding: "6px 10px",
-    fontSize: 13,
-    textAlign: "right",
-    verticalAlign: "middle",
-    whiteSpace: "nowrap",
-  };
-  const personCell: React.CSSProperties = {
-    ...tdLeft,
-    maxWidth: 280,
-  };
-  const subNote: React.CSSProperties = { fontSize: 11, color: "#666" };
+        # raw.json -> reply_to_message -> message_id varsa yukarı tırman
+        try:
+            j = raw.json or {}
+            rt = j.get("message") or j.get("edited_message") or j.get("channel_post") or j.get("edited_channel_post") or {}
+            replied = rt.get("reply_to_message") or {}
+            parent_id = replied.get("message_id")
+        except Exception:
+            parent_id = None
 
-  return (
-    <div style={container}>
-      <h1 style={{ margin: 0, fontSize: 20 }}>Bonus • Kapanış Performansı</h1>
+        if parent_id:
+            current_id = int(parent_id)
+            continue  # zincirde yukarı
+        else:
+            # kök
+            cache[(chat_id, start_msg_id)] = raw.ts
+            return raw.ts
 
-      {/* Filtre barı */}
-      <form
-        onSubmit={(e) => { e.preventDefault(); load(); }}
-        style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
-      >
-        <input type="date" value={from} onChange={(e)=>setFrom(e.target.value)} />
-        <input type="date" value={to} onChange={(e)=>setTo(e.target.value)} />
-        <select value={order} onChange={(e)=>setOrder(e.target.value as any)}>
-          <option value="avg_asc">Ø Sonuçlandırma (artan)</option>
-          <option value="avg_desc">Ø Sonuçlandırma (azalan)</option>
-          <option value="cnt_desc">İşlem Sayısı (çoktan aza)</option>
-        </select>
-        <button type="submit" disabled={loading}>
-          {loading ? "Yükleniyor…" : "Listele"}
-        </button>
-        {err && <span style={{ color: "#b00020", fontSize: 12 }}>{err}</span>}
-      </form>
+# ---------- BONUS: kişi bazlı kapanış ve ilk yanıt raporu (sn) ----------
+@router.get(
+    "/bonus/close-time",
+    dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))],
+)
+def bonus_close_time(
+    frm: str | None = Query(None, description="YYYY-MM-DD (default: son 7 gün)"),
+    to: str | None = Query(None, description="YYYY-MM-DD (exclusive, default: bugün+1)"),
+    order: Literal["avg_asc","avg_desc","cnt_desc"] = Query("avg_asc"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """
+    BONUS departmanı için (employees.department='Bonus') kişi bazlı rapor.
+    Sütunlar:
+      - personel
+      - işlem sayısı (close tipleri adedi)
+      - Ø İlk Yanıt (sn): kişinin reply_first.ts - KÖK origin.ts
+      - Ø Sonuçlandırma (sn): kişinin close.ts - KÖK origin.ts
+      - Trend: kişinin Ø sonuçlandırması, ekip Ø sonuçlandırmasına göre (% ve emoji)
+    Kurallar:
+      - close tipleri: reply_close, approve, reject
+      - KÖK origin, reply zinciri en baştaki mesajdır (reply_to_message zinciri takip edilir).
+      - employee_id eşleşmiş kayıtlar dikkate alınır; departmanı 'Bonus' olmayanlar filtrelenir.
+    """
+    # Tarih aralığı
+    dt_to = _parse_date(to) or (datetime.now(timezone.utc) + timedelta(days=1))
+    dt_from = _parse_date(frm) or (dt_to - timedelta(days=7))
 
-      {/* Bilgilendirme satırı */}
-      <div style={{ fontSize: 12, color: "#666" }}>
-        Kaynak: <b>Bonus</b> kanalı (webhook). Veri <i>yakın gerçek zamanlı</i>dır; sayfayı yenilediğinizde
-        yeni kapanışlar yansır. Tarih verilmezse <b>son 7 gün</b> kullanılır.
-      </div>
+    # Bonus departmanındaki personeller
+    bonus_emp_rows = db.query(Employee.employee_id, Employee.full_name, Employee.department).filter(Employee.department == "Bonus").all()
+    bonus_emp_ids = {r[0] for r in bonus_emp_rows}
+    emp_info = {r[0]: (r[1] or r[0], r[2] or "Bonus") for r in bonus_emp_rows}
+    if not bonus_emp_ids:
+        return []
 
-      {/* Tablo */}
-      <div style={card}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th style={{ ...th, width: 360 }}>Personel</th>
-              <th style={{ ...th, width: 120, textAlign: "right" }}>İşlem Sayısı</th>
-              <th style={{ ...th, width: 160, textAlign: "right" }}>Ø İlk Yanıt (sn)</th>
-              <th style={{ ...th, width: 180, textAlign: "right" }}>Ø Sonuçlandırma (sn)</th>
-              <th style={{ ...th, width: 160 }}>Trend (Ekip)</th>
-              <th style={{ ...th, width: 120 }}>Kişi</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr
-                key={r.employee_id}
-                style={{ borderTop: "1px solid #f5f5f5", background: i % 2 ? "#fafafa" : "#fff" }}
-              >
-                <td style={personCell}>
-                  <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {r.full_name}
-                  </div>
-                  <div style={subNote}>
-                    {r.employee_id} • {r.department}
-                  </div>
-                </td>
+    # Eventleri çek
+    close_types = ("reply_close", "approve", "reject")
 
-                <td style={tdRight}>{r.count_total}</td>
-                <td style={tdRight}>{r.avg_first_sec ?? "—"}</td>
-                <td style={tdRight}>{r.avg_close_sec}</td>
+    first_rows: List[Event] = (
+        db.query(Event)
+        .filter(
+            Event.source_channel == "bonus",
+            Event.type == "reply_first",
+            Event.employee_id.isnot(None),
+            Event.employee_id.in_(bonus_emp_ids),
+            Event.ts >= dt_from,
+            Event.ts < dt_to,
+        )
+        .order_by(Event.ts.asc())
+        .all()
+    )
 
-                <td style={tdLeft}>
-                  <span style={{ marginRight: 6 }}>{r.trend.emoji}</span>
-                  <b>{r.trend.pct === null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}</b>
-                  <div style={subNote}>
-                    Ekip Ø: {r.trend.team_avg_close_sec ?? "—"} sn
-                  </div>
-                </td>
+    close_rows: List[Event] = (
+        db.query(Event)
+        .filter(
+            Event.source_channel == "bonus",
+            Event.type.in_(close_types),
+            Event.employee_id.isnot(None),
+            Event.employee_id.in_(bonus_emp_ids),
+            Event.ts >= dt_from,
+            Event.ts < dt_to,
+        )
+        .order_by(Event.ts.asc())
+        .all()
+    )
 
-                <td style={tdLeft}>
-                  <Link to={`/employees/${encodeURIComponent(r.employee_id)}?tab=activity`}>Kişi sayfası</Link>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={6} style={{ padding: 12, fontSize: 13, color: "#777" }}>
-                  Kayıt yok.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
+    if not first_rows and not close_rows:
+        return []
+
+    # KÖK origin ts için cache
+    root_cache: Dict[Tuple[int,int], datetime | None] = {}
+
+    # Kişi bazında süreler (sn)
+    per_emp_first_secs: Dict[str, List[float]] = {}
+    per_emp_close_secs: Dict[str, List[float]] = {}
+
+    # 1) Ø İlk Yanıt = kişinin reply_first.ts - KÖK origin.ts
+    for e in first_rows:
+        root_ts = _root_origin_ts(chat_id=e.chat_id, start_msg_id=e.msg_id, db=db, cache=root_cache)
+        if not root_ts:
+            continue
+        sec = (e.ts - root_ts).total_seconds()
+        if sec < 0:
+            continue
+        per_emp_first_secs.setdefault(e.employee_id, []).append(sec)
+
+    # 2) Ø Sonuçlandırma = kişinin close.ts - KÖK origin.ts
+    for e in close_rows:
+        root_ts = _root_origin_ts(chat_id=e.chat_id, start_msg_id=e.msg_id, db=db, cache=root_cache)
+        if not root_ts:
+            continue
+        sec = (e.ts - root_ts).total_seconds()
+        if sec < 0:
+            continue
+        per_emp_close_secs.setdefault(e.employee_id, []).append(sec)
+
+    if not per_emp_close_secs:
+        return []
+
+    # Ekip Ø sonuçlandırma (sn)
+    all_close = [s for arr in per_emp_close_secs.values() for s in arr]
+    team_avg_close_sec = mean(all_close) if all_close else None
+
+    # Satırları hazırla
+    rows = []
+    for emp_id, close_secs in per_emp_close_secs.items():
+        full_name, dept = emp_info.get(emp_id, (emp_id, "Bonus"))
+        avg_close_sec = mean(close_secs)
+        first_secs = per_emp_first_secs.get(emp_id, [])
+        avg_first_sec = mean(first_secs) if first_secs else None
+        trend_pct = None
+        if team_avg_close_sec and team_avg_close_sec > 0:
+            trend_pct = round(((avg_close_sec - team_avg_close_sec) / team_avg_close_sec) * 100, 0)
+        rows.append({
+            "employee_id": emp_id,
+            "full_name": full_name,
+            "department": dept,
+            "count_total": len(close_secs),                                     # İşlem Sayısı
+            "avg_first_sec": round(avg_first_sec, 1) if avg_first_sec is not None else None,  # Ø İlk Yanıt (sn)
+            "avg_close_sec": round(avg_close_sec, 1),                           # Ø Sonuçlandırma (sn)
+            "trend": {
+                "emoji": _sign_emoji(trend_pct),
+                "pct": trend_pct,
+                "team_avg_close_sec": round(team_avg_close_sec, 1) if team_avg_close_sec else None,
+            }
+        })
+
+    # Sıralama
+    if order == "avg_desc":
+        rows.sort(key=lambda r: (r["avg_close_sec"],), reverse=True)
+    elif order == "cnt_desc":
+        rows.sort(key=lambda r: (r["count_total"], r["avg_close_sec"]), reverse=True)
+    else:  # avg_asc default
+        rows.sort(key=lambda r: (r["avg_close_sec"], -r["count_total"]))
+
+    # Sayfalama
+    return rows[offset: offset + limit]
