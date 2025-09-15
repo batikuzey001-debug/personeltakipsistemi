@@ -49,11 +49,59 @@ export default function ReportBonusClose() {
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
-  return (
-    <div style={{ display: "grid", gap: 16 }}>
-      <h1>Bonus • Kapanış Süresi (Kişi Bazlı)</h1>
+  // ----- STYLES (sıkı ve tutarlı) -----
+  const container: React.CSSProperties = {
+    maxWidth: 1200,
+    margin: "0 auto",
+    padding: 12,
+    display: "grid",
+    gap: 12,
+  };
+  const card: React.CSSProperties = {
+    border: "1px solid #e9e9e9",
+    borderRadius: 12,
+    background: "#fff",
+    overflow: "hidden",
+  };
+  const th: React.CSSProperties = {
+    position: "sticky",
+    top: 0,
+    background: "#fff",
+    borderBottom: "1px solid #eee",
+    fontWeight: 600,
+    fontSize: 13,
+    padding: "6px 10px",
+    textAlign: "left",
+    whiteSpace: "nowrap",
+  };
+  const tdLeft: React.CSSProperties = {
+    padding: "6px 10px",
+    fontSize: 13,
+    textAlign: "left",
+    verticalAlign: "middle",
+  };
+  const tdRight: React.CSSProperties = {
+    padding: "6px 10px",
+    fontSize: 13,
+    textAlign: "right",
+    verticalAlign: "middle",
+    whiteSpace: "nowrap",
+  };
+  const personCell: React.CSSProperties = {
+    ...tdLeft,
+    maxWidth: 280,
+  };
+  const subNote: React.CSSProperties = { fontSize: 11, color: "#666" };
 
-      <form onSubmit={(e)=>{e.preventDefault(); load();}} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+  return (
+    <div style={container}>
+      <h1 style={{ margin: 0, fontSize: 20 }}>Bonus • Kapanış Performansı</h1>
+
+      {/* Filtre barı */}
+      <form
+        onSubmit={(e) => { e.preventDefault(); load(); }}
+        style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
+      >
         <input type="date" value={from} onChange={(e)=>setFrom(e.target.value)} />
         <input type="date" value={to} onChange={(e)=>setTo(e.target.value)} />
         <select value={order} onChange={(e)=>setOrder(e.target.value as any)}>
@@ -61,43 +109,69 @@ export default function ReportBonusClose() {
           <option value="avg_desc">Ø Sonuçlandırma (azalan)</option>
           <option value="cnt_desc">İşlem Sayısı (çoktan aza)</option>
         </select>
-        <button type="submit" disabled={loading}>{loading ? "Yükleniyor…" : "Listele"}</button>
+        <button type="submit" disabled={loading}>
+          {loading ? "Yükleniyor…" : "Listele"}
+        </button>
         {err && <span style={{ color: "#b00020", fontSize: 12 }}>{err}</span>}
       </form>
 
-      <div style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden", background: "#fff" }}>
+      {/* Bilgilendirme satırı */}
+      <div style={{ fontSize: 12, color: "#666" }}>
+        Kaynak: <b>Bonus</b> kanalı (webhook). Veri <i>yakın gerçek zamanlı</i>dır; sayfayı yenilediğinizde
+        yeni kapanışlar yansır. Tarih verilmezse <b>son 7 gün</b> kullanılır.
+      </div>
+
+      {/* Tablo */}
+      <div style={card}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#fafafa" }}>
-              <th style={{ textAlign: "left", padding: 8 }}>Personel</th>
-              <th style={{ textAlign: "right", padding: 8, width: 120 }}>İşlem Sayısı</th>
-              <th style={{ textAlign: "right", padding: 8, width: 160 }}>Ø İlk Yanıt (sn)</th>
-              <th style={{ textAlign: "right", padding: 8, width: 180 }}>Ø Sonuçlandırma (sn)</th>
-              <th style={{ textAlign: "left", padding: 8, width: 140 }}>Trend</th>
-              <th style={{ textAlign: "left", padding: 8, width: 120 }}>Kişi</th>
+            <tr>
+              <th style={{ ...th, width: 360 }}>Personel</th>
+              <th style={{ ...th, width: 120, textAlign: "right" }}>İşlem Sayısı</th>
+              <th style={{ ...th, width: 160, textAlign: "right" }}>Ø İlk Yanıt (sn)</th>
+              <th style={{ ...th, width: 180, textAlign: "right" }}>Ø Sonuçlandırma (sn)</th>
+              <th style={{ ...th, width: 160 }}>Trend (Ekip)</th>
+              <th style={{ ...th, width: 120 }}>Kişi</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.employee_id} style={{ borderTop: "1px solid #f1f1f1" }}>
-                <td style={{ padding: 8 }}>
-                  <div style={{ fontWeight: 600 }}>{r.full_name}</div>
-                  <div style={{ fontSize: 12, color: "#666" }}>{r.employee_id} • {r.department}</div>
+            {rows.map((r, i) => (
+              <tr
+                key={r.employee_id}
+                style={{ borderTop: "1px solid #f5f5f5", background: i % 2 ? "#fafafa" : "#fff" }}
+              >
+                <td style={personCell}>
+                  <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {r.full_name}
+                  </div>
+                  <div style={subNote}>
+                    {r.employee_id} • {r.department}
+                  </div>
                 </td>
-                <td style={{ padding: 8, textAlign: "right" }}>{r.count_total}</td>
-                <td style={{ padding: 8, textAlign: "right" }}>{r.avg_first_sec ?? "—"}</td>
-                <td style={{ padding: 8, textAlign: "right" }}>{r.avg_close_sec}</td>
-                <td style={{ padding: 8 }}>
-                  {r.trend.emoji}{" "}
-                  {r.trend.pct === null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}
+
+                <td style={tdRight}>{r.count_total}</td>
+                <td style={tdRight}>{r.avg_first_sec ?? "—"}</td>
+                <td style={tdRight}>{r.avg_close_sec}</td>
+
+                <td style={tdLeft}>
+                  <span style={{ marginRight: 6 }}>{r.trend.emoji}</span>
+                  <b>{r.trend.pct === null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}</b>
+                  <div style={subNote}>
+                    Ekip Ø: {r.trend.team_avg_close_sec ?? "—"} sn
+                  </div>
                 </td>
-                <td style={{ padding: 8 }}>
+
+                <td style={tdLeft}>
                   <Link to={`/employees/${encodeURIComponent(r.employee_id)}?tab=activity`}>Kişi sayfası</Link>
                 </td>
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={6} style={{ padding: 12, color: "#777" }}>Kayıt yok.</td></tr>
+              <tr>
+                <td colSpan={6} style={{ padding: 12, fontSize: 13, color: "#777" }}>
+                  Kayıt yok.
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
