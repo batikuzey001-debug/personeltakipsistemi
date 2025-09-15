@@ -8,11 +8,12 @@ from app.db.base import Base
 from app.db.session import engine
 
 # MODELLER (create_all tüm tabloları görsün)
-import app.models.events        # raw_messages, events
-import app.models.facts         # facts_daily, facts_monthly
-import app.models.identities    # employee_identities
+import app.models.events
+import app.models.facts
+import app.models.identities
+import app.models.models   # <-- Employee modelindeki yeni kolonları create_all görsün
 
-# ROUTERLAR (sadece import — include'lar aşağıda)
+# ROUTERLAR
 from app.api.routes_auth import router as auth_router
 from app.api.routes_org import router as org_router
 from app.api.route_seed import router as seed_router
@@ -28,7 +29,6 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.APP_NAME)
 
-# CORS: V1 geniş; prod'da panel domaini ile sınırla
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,20 +37,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---- Basit başlangıç migrasyonları (startup'ta bir kez çalışır) ----
+# ---- Basit başlangıç migrasyonları ----
 MIGRATIONS_SQL = [
     # UID kolonlarını BIGINT'e yükselt
-    "ALTER TABLE IF EXISTS raw_messages "
-    "  ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
-    "ALTER TABLE IF EXISTS events "
-    "  ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
+    "ALTER TABLE IF EXISTS raw_messages ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
+    "ALTER TABLE IF EXISTS events       ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
 
     # employees tablosu kart alanları (varsa atlar)
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS department VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(255);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS phone VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
-    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
+    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;"
 ]
 
 @app.on_event("startup")
@@ -60,14 +59,13 @@ def run_startup_migrations():
             try:
                 conn.execute(text(stmt))
             except Exception as e:
-                # idempotent: kolon zaten varsa/hata varsa servisi durdurma
                 print(f"[startup-migration] skip/err: {e}")
 
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
 
-# Router kayıtları — DİKKAT: app oluşturulduktan SONRA
+# Router kayıtları
 app.include_router(auth_router)
 app.include_router(org_router)
 app.include_router(seed_router)
@@ -76,4 +74,4 @@ app.include_router(telegram_router)
 app.include_router(debug_router)
 app.include_router(jobs_router)
 app.include_router(identities_router)
-app.include_router(employee_view_router)   # Employee Detay uçları
+app.include_router(employee_view_router)
