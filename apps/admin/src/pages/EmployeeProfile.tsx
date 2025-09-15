@@ -94,14 +94,14 @@ export default function EmployeeProfile() {
 
   const title = useMemo(() => emp ? `${emp.full_name} • ${emp.employee_id}` : "Personel", [emp]);
 
-  // ---- yardımcı: alanı hem görüntü hem input olarak render et (editing'e göre) ----
+  // alan renderer (görüntü → düzenleme modunda input)
   function Field({
     label, value, children, span = 1,
   }: { label: string; value: React.ReactNode; children?: React.ReactNode; span?: number }) {
     return (
       <div style={{ gridColumn: `span ${span}` }}>
         <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>{label}</div>
-        {editing ? children ?? <div>{value}</div> : <div style={{ fontWeight: 600 }}>{value || "—"}</div>}
+        {editing ? (children ?? <div>{value}</div>) : <div style={{ fontWeight: 600 }}>{value || "—"}</div>}
       </div>
     );
   }
@@ -114,7 +114,6 @@ export default function EmployeeProfile() {
       const payload: any = {};
       const assign = (k: keyof Employee) => { const v = (form as any)[k]; if (v !== undefined) payload[k] = v === "" ? null : v; };
       ["full_name","email","title","status","hired_at","phone","notes","department"].forEach(k => assign(k as any));
-      // telegram_* alanları sadece görüntülük; backend zaten otomatik eşliyor. Yine de boş değilse değişmeyecek.
       await apiPatch<Employee>(`/employees/${encodeURIComponent(emp.employee_id)}`, payload);
       setOk("Kart güncellendi");
       setEditing(false);
@@ -147,43 +146,73 @@ export default function EmployeeProfile() {
       {err && <div style={{ color:"#b00020" }}>{err}</div>}
       {ok && <div style={{ color:"green" }}>{ok}</div>}
 
-      {/* ÖZET (görüntü modu → daha derli toplu; düzenle modunda aynı düzenin içinde inputlar açılır) */}
+      {/* ÖZET */}
       {tab === "summary" && emp && (
         <form id="emp-summary-form" onSubmit={saveSummary} style={{ display: "grid", gap: 12 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
             <Field label="Employee ID" value={emp.employee_id} />
             <Field label="Durum" value={emp.status}>
-              <select value={form.status ?? "active"} onChange={(e)=>setForm({...form, status: e.target.value})} disabled={!editing}>
+              <select
+                value={form.status ?? "active"}
+                onChange={(e)=>setForm({...form, status: e.target.value})}
+                disabled={!editing}
+              >
                 <option value="active">active</option>
                 <option value="inactive">inactive</option>
               </select>
             </Field>
 
             <Field label="Ad Soyad" value={emp.full_name}>
-              <input value={form.full_name ?? ""} onChange={(e)=>setForm({...form, full_name: e.target.value})} disabled={!editing} />
+              <input
+                value={form.full_name ?? ""}
+                onChange={(e)=>setForm({...form, full_name: e.target.value})}
+                disabled={!editing}
+              />
             </Field>
 
             <Field label="Departman" value={emp.department ?? "—"}>
-              <select value={form.department ?? ""} onChange={(e)=>setForm({...form, department: e.target.value})} disabled={!editing}>
+              <select
+                value={form.department ?? ""}
+                onChange={(e)=>setForm({...form, department: e.target.value})}
+                disabled={!editing}
+              >
                 <option value="">Seçiniz</option>
                 {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
             </Field>
 
             <Field label="Ünvan" value={emp.title ?? "—"}>
-              <input value={form.title ?? ""} onChange={(e)=>setForm({...form, title: e.target.value})} disabled={!editing} />
+              <input
+                value={form.title ?? ""}
+                onChange={(e)=>setForm({...form, title: e.target.value})}
+                disabled={!editing}
+              />
             </Field>
 
             <Field label="İşe Başlama" value={emp.hired_at ?? "—"}>
-              <input type="date" value={form.hired_at ?? ""} onChange={(e)=>setForm({...form, hired_at: e.target.value})} disabled={!editing} />
+              <input
+                type="date"
+                value={form.hired_at ?? ""}
+                onChange={(e)=>setForm({...form, hired_at: e.target.value})}
+                disabled={!editing}
+              />
             </Field>
 
             <Field label="E-posta" value={emp.email ?? "—"}>
-              <input value={form.email ?? ""} onChange={(e)=>setForm({...form, email: e.target.value})} disabled={!editing} />
+              <input
+                value={form.email ?? ""}
+                onChange={(e)=>setForm({...form, email: e.target.value})}
+                disabled={!editing}
+              />
             </Field>
 
             <Field label="Telefon" value={emp.phone ?? "—"}>
-              <input value={form.phone ?? ""} onChange={(e)=>setForm({...form, phone: e.target.value})} disabled={!editing} placeholder="+905xxxxxxxxx" />
+              <input
+                value={form.phone ?? ""}
+                onChange={(e)=>setForm({...form, phone: e.target.value})}
+                disabled={!editing}
+                placeholder="+905xxxxxxxxx"
+              />
             </Field>
 
             <Field label="Telegram Username" value={emp.telegram_username ?? "—"}>
@@ -195,11 +224,22 @@ export default function EmployeeProfile() {
             </Field>
 
             <Field label="Maaş (brüt)" value={emp.salary_gross ?? "—"}>
-              <input type="number" step="0.01" value={form.salary_gross ?? "" as any} onChange={(e)=>setForm({...form, salary_gross: e.target.value === "" ? undefined : Number(e.target.value)})} disabled={!editing} />
+              <input
+                type="number"
+                step="0.01"
+                value={form.salary_gross ?? "" as any}
+                onChange={(e)=>setForm({...form, salary_gross: e.target.value === "" ? undefined : Number(e.target.value)})}
+                disabled={!editing}
+              />
             </Field>
 
             <Field label="Notlar" value={<span style={{ whiteSpace:"pre-wrap" }}>{emp.notes ?? "—"}</span>} span={2}>
-              <textarea rows={4} value={form.notes ?? ""} onChange={(e)=>setForm({...form, notes: e.target.value})} disabled={!editing} />
+              <textarea
+                rows={4}
+                value={form.notes ?? ""}
+                onChange={(e)=>setForm({...form, notes: e.target.value})}
+                disabled={!editing}
+              />
             </Field>
           </div>
         </form>
@@ -207,10 +247,10 @@ export default function EmployeeProfile() {
 
       {/* AKTİVİTELER */}
       {tab === "activity" && (
-        <div style={{ border:"1px solid #eee", borderRadius:12, overflow:"hidden" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse" }}>
+        <div style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background:"#fafafa" }}>
+              <tr style={{ background: "#fafafa" }}>
                 <th style={{ textAlign:"left", padding:8 }}>Tarih</th>
                 <th style={{ textAlign:"left", padding:8 }}>Kanal</th>
                 <th style={{ textAlign:"left", padding:8 }}>Tip</th>
@@ -238,10 +278,10 @@ export default function EmployeeProfile() {
 
       {/* GÜNLÜK METRİKLER */}
       {tab === "daily" && (
-        <div style={{ border:"1px solid "#eee", borderRadius:12, overflow:"hidden" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse" }}>
+        <div style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background:"#fafafa" }}>
+              <tr style={{ background: "#fafafa" }}>
                 <th style={{ textAlign:"left", padding:8 }}>Gün</th>
                 <th style={{ textAlign:"left", padding:8 }}>KPI</th>
                 <th style={{ textAlign:"left", padding:8 }}>Değer</th>
