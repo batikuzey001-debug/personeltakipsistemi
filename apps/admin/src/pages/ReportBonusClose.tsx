@@ -9,10 +9,10 @@ type Row = {
   employee_id: string;
   full_name: string;
   department: string;
-  count_total: number;      // İşlem Sayısı
-  avg_first_sec: number | null; // Ø İlk Yanıt (sn)
-  avg_close_sec: number;    // Ø Sonuçlandırma (sn)
-  trend: Trend;             // Trend (ekip karşılaştırma)
+  count_total: number;         // İşlem Sayısı
+  avg_first_sec: number | null; // Ø İlk Yanıt (sn - integer)
+  avg_close_sec: number;       // Ø Sonuçlandırma (sn - integer)
+  trend: Trend;                // Trend (ekip karşılaştırma)
 };
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -20,6 +20,14 @@ async function apiGet<T>(path: string): Promise<T> {
   const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
   if (!r.ok) throw new Error(await r.text());
   return (await r.json()) as T;
+}
+
+function fmtMMSS(sec: number | null) {
+  if (sec === null || sec === undefined) return "—";
+  const s = Math.max(0, Math.round(sec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
 }
 
 export default function ReportBonusClose() {
@@ -49,7 +57,6 @@ export default function ReportBonusClose() {
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
-  // ----- STYLES (sıkı ve tutarlı) -----
   const container: React.CSSProperties = {
     maxWidth: 1200,
     margin: "0 auto",
@@ -97,7 +104,6 @@ export default function ReportBonusClose() {
     <div style={container}>
       <h1 style={{ margin: 0, fontSize: 20 }}>Bonus • Kapanış Performansı</h1>
 
-      {/* Filtre barı */}
       <form
         onSubmit={(e) => { e.preventDefault(); load(); }}
         style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
@@ -115,31 +121,25 @@ export default function ReportBonusClose() {
         {err && <span style={{ color: "#b00020", fontSize: 12 }}>{err}</span>}
       </form>
 
-      {/* Bilgilendirme satırı */}
       <div style={{ fontSize: 12, color: "#666" }}>
-        Kaynak: <b>Bonus</b> kanalı (webhook). Veri <i>yakın gerçek zamanlı</i>dır; sayfayı yenileyince güncellenir.
-        Tarih verilmezse <b>son 7 gün</b> kullanılır.
+        Kaynak: <b>Bonus</b> kanalı (webhook). Veri sayfayı yenileyince güncellenir. Tarih verilmezse <b>son 7 gün</b>.
       </div>
 
-      {/* Tablo */}
       <div style={card}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
               <th style={{ ...th, width: 360 }}>Personel</th>
               <th style={{ ...th, width: 120, textAlign: "right" }}>İşlem Sayısı</th>
-              <th style={{ ...th, width: 160, textAlign: "right" }}>Ø İlk Yanıt (sn)</th>
-              <th style={{ ...th, width: 180, textAlign: "right" }}>Ø Sonuçlandırma (sn)</th>
+              <th style={{ ...th, width: 160, textAlign: "right" }}>Ø İlk Yanıt (dk:ss)</th>
+              <th style={{ ...th, width: 180, textAlign: "right" }}>Ø Sonuçlandırma (dk:ss)</th>
               <th style={{ ...th, width: 160 }}>Trend (Ekip)</th>
               <th style={{ ...th, width: 120 }}>Kişi</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r, i) => (
-              <tr
-                key={r.employee_id}
-                style={{ borderTop: "1px solid #f5f5f5", background: i % 2 ? "#fafafa" : "#fff" }}
-              >
+              <tr key={r.employee_id} style={{ borderTop: "1px solid #f5f5f5", background: i % 2 ? "#fafafa" : "#fff" }}>
                 <td style={personCell}>
                   <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {r.full_name}
@@ -150,15 +150,13 @@ export default function ReportBonusClose() {
                 </td>
 
                 <td style={tdRight}>{r.count_total}</td>
-                <td style={tdRight}>{r.avg_first_sec ?? "—"}</td>
-                <td style={tdRight}>{r.avg_close_sec}</td>
+                <td style={tdRight}>{fmtMMSS(r.avg_first_sec)}</td>
+                <td style={tdRight}>{fmtMMSS(r.avg_close_sec)}</td>
 
                 <td style={tdLeft}>
                   <span style={{ marginRight: 6 }}>{r.trend.emoji}</span>
                   <b>{r.trend.pct === null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}</b>
-                  <div style={subNote}>
-                    Ekip Ø: {r.trend.team_avg_close_sec ?? "—"} sn
-                  </div>
+                  <div style={subNote}>Ekip Ø: {fmtMMSS(r.trend.team_avg_close_sec)}</div>
                 </td>
 
                 <td style={tdLeft}>
