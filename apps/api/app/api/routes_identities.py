@@ -235,3 +235,95 @@ def backfill_from_events(
         "scanned_events": len(evs),
         "new_actor_keys": len(found),
     }
+
+# apps/api/app/api/routes_identities.py  (DOSYANIN SONUNA EKLE)
+from app.models.events import Event, RawMessage
+from sqlalchemy import desc
+
+@router.post("/enrich-hints", dependencies=[Depends(RolesAllowed("super_admin","admin"))])
+def enrich_hints_for_pending(
+    since_days: int = Query(3650, ge=0, le=36500, description="Kaç gün geriye bakılacağı (Raw/Event taraması)"),
+    db: Session = Depends(get_db),
+):
+    """
+    PENDING kimlikler için isim ipucunu doldurur:
+      1) Mesai eventlerinde payload.person
+      2) Event.from_username (@'siz)
+      3) RawMessage.json -> message/edited_message/channel_post -> from.first_name + last_name
+    """
+    pendings = db.query(EmployeeIdentity).filter(EmployeeIdentity.status == "pending").all()
+    if not pendings:
+        return {"ok": True, "updated": 0, "reason": "no pending"}
+
+    updated = 0
+    from datetime import datetime, timedelta, timezone
+    since_ts = None
+    if since_days > 0:
+        since_ts = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    for rec in pendings:
+        if rec.hint_name:  # zaten var
+            continue
+
+        kind, val = _parse_actor_key(rec.actor_key)
+        if not kind:
+            continue
+
+        # 1) Mesai eventlerinden person ismi
+        q_ev = db.query(Event).order_by(desc(Event.ts))
+        if kind == "uid":
+            q_ev = q_ev.filter(Event.from_user_id == val)
+        else:
+            q_ev = q_ev.filter(Event.from_username == rec.actor_key.split(":",1)[1])
+        if since_ts:
+            q_ev = q_ev.filter(Event.ts >= since_ts)
+
+        name_hint = None
+        for ev in q_ev.limit(50).all():
+            if ev.source_channel == "mesai":
+                try:
+                    cand = (ev.payload_json or {}).get("person")
+                    if cand and str(cand).strip():
+                        name_hint = str(cand).strip()
+                        break
+                except Exception:
+                    pass
+            # Mesai dışında username ipucu
+            if not name_hint and ev.from_username:
+                name_hint = ev.from_username.lstrip("@")
+
+        # 2) RawMessage.json'dan first+last
+        if not name_hint:
+            q_raw = db.query(RawMessage).order_by(desc(RawMessage.ts))
+            if kind == "uid":
+                q_raw = q_raw.filter(RawMessage.from_user_id == val)
+            else:
+                q_raw = q_raw.filter(RawMessage.from_username == rec.actor_key.split(":",1)[1])
+            if since_ts:
+                q_raw = q_raw.filter(RawMessage.ts >= since_ts)
+
+            raw = q_raw.first()
+            if raw and isinstance(raw.json, dict):
+                # update objesinin hangi alanında varsa onu bul
+                for k in ("message", "edited_message", "channel_post", "edited_channel_post"):
+                    m = raw.json.get(k)
+                    if not m: 
+                        continue
+                    fu = m.get("from") or {}
+                    first = str(fu.get("first_name") or "").strip()
+                    last  = str(fu.get("last_name")  or "").strip()
+                    fullname = (first + " " + last).strip()
+                    if fullname:
+                        name_hint = fullname
+                        break
+                # username de yoksa son çare: raw.from_username
+                if not name_hint and raw.from_username:
+                    name_hint = raw.from_username.lstrip("@")
+
+        if name_hint:
+            rec.hint_name = name_hint
+            db.add(rec)
+            updated += 1
+
+    db.commit()
+    return {"ok": True, "updated": updated}
