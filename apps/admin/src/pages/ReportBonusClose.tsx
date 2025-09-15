@@ -9,10 +9,10 @@ type Row = {
   employee_id: string;
   full_name: string;
   department: string;
-  count_total: number;         // İşlem Sayısı
-  avg_first_sec: number | null; // Ø İlk Yanıt (sn - integer)
-  avg_close_sec: number;       // Ø Sonuçlandırma (sn - integer)
-  trend: Trend;                // Trend (ekip karşılaştırma)
+  count_total: number;
+  avg_first_sec: number | null; // sn
+  avg_close_sec: number;        // sn
+  trend: Trend;                 // ekip Ø = her zaman son 7 gün
 };
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -104,10 +104,8 @@ export default function ReportBonusClose() {
     <div style={container}>
       <h1 style={{ margin: 0, fontSize: 20 }}>Bonus • Kapanış Performansı</h1>
 
-      <form
-        onSubmit={(e) => { e.preventDefault(); load(); }}
-        style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
-      >
+      {/* Filtre barı */}
+      <form onSubmit={(e)=>{e.preventDefault(); load();}} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <input type="date" value={from} onChange={(e)=>setFrom(e.target.value)} />
         <input type="date" value={to} onChange={(e)=>setTo(e.target.value)} />
         <select value={order} onChange={(e)=>setOrder(e.target.value as any)}>
@@ -115,16 +113,16 @@ export default function ReportBonusClose() {
           <option value="avg_desc">Ø Sonuçlandırma (azalan)</option>
           <option value="cnt_desc">İşlem Sayısı (çoktan aza)</option>
         </select>
-        <button type="submit" disabled={loading}>
-          {loading ? "Yükleniyor…" : "Listele"}
-        </button>
+        <button type="submit" disabled={loading}>{loading ? "Yükleniyor…" : "Listele"}</button>
         {err && <span style={{ color: "#b00020", fontSize: 12 }}>{err}</span>}
       </form>
 
+      {/* Bilgilendirme */}
       <div style={{ fontSize: 12, color: "#666" }}>
-        Kaynak: <b>Bonus</b> kanalı (webhook). Veri sayfayı yenileyince güncellenir. Tarih verilmezse <b>son 7 gün</b>.
+        Trend, **her zaman** <b>son 7 gün ekip ortalamasına</b> göre hesaplanır. Tarih seçimi yalnızca tablo satırlarını (kişisel metrikleri) sınırlar.
       </div>
 
+      {/* Tablo */}
       <div style={card}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -133,7 +131,7 @@ export default function ReportBonusClose() {
               <th style={{ ...th, width: 120, textAlign: "right" }}>İşlem Sayısı</th>
               <th style={{ ...th, width: 160, textAlign: "right" }}>Ø İlk Yanıt (dk:ss)</th>
               <th style={{ ...th, width: 180, textAlign: "right" }}>Ø Sonuçlandırma (dk:ss)</th>
-              <th style={{ ...th, width: 160 }}>Trend (Ekip)</th>
+              <th style={{ ...th, width: 160 }}>Trend (Ekip 7G)</th>
               <th style={{ ...th, width: 120 }}>Kişi</th>
             </tr>
           </thead>
@@ -148,28 +146,21 @@ export default function ReportBonusClose() {
                     {r.employee_id} • {r.department}
                   </div>
                 </td>
-
                 <td style={tdRight}>{r.count_total}</td>
-                <td style={tdRight}>{fmtMMSS(r.avg_first_sec)}</td>
+                <td style={tdRight}>{r.avg_first_sec is not None ? fmtMMSS(r.avg_first_sec) : "—"}</td>
                 <td style={tdRight}>{fmtMMSS(r.avg_close_sec)}</td>
-
                 <td style={tdLeft}>
                   <span style={{ marginRight: 6 }}>{r.trend.emoji}</span>
-                  <b>{r.trend.pct === null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}</b>
+                  <b>{r.trend.pct is null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}</b>
                   <div style={subNote}>Ekip Ø: {fmtMMSS(r.trend.team_avg_close_sec)}</div>
                 </td>
-
                 <td style={tdLeft}>
                   <Link to={`/employees/${encodeURIComponent(r.employee_id)}?tab=activity`}>Kişi sayfası</Link>
                 </td>
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr>
-                <td colSpan={6} style={{ padding: 12, fontSize: 13, color: "#777" }}>
-                  Kayıt yok.
-                </td>
-              </tr>
+              <tr><td colSpan={6} style={{ padding: 12, fontSize: 13, color: "#777" }}>Kayıt yok.</td></tr>
             )}
           </tbody>
         </table>
