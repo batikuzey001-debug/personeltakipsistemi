@@ -2,12 +2,13 @@
 import React, { useEffect, useState } from "react";
 
 const API = import.meta.env.VITE_API_BASE_URL as string;
+const DEPARTMENTS = ["Call Center", "Canlı", "Finans", "Bonus", "Admin"] as const;
 
 type Employee = {
   employee_id: string;
   full_name: string;
   email?: string | null;
-  team_id?: number | null;
+  department?: string | null;
   title?: string | null;
   hired_at?: string | null; // YYYY-MM-DD
   status: string;
@@ -41,13 +42,13 @@ async function apiPatch<T>(path: string, body: any): Promise<T> {
 export default function Employees() {
   const [rows, setRows] = useState<Employee[]>([]);
   const [q, setQ] = useState("");
-  const [teamId, setTeamId] = useState<string>("");
+  const [department, setDepartment] = useState<string>("");
   const [limit, setLimit] = useState(50);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
-  // Düzenleme modal state
+  // Düzenleme modal
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<Partial<Employee>>({});
   const [saving, setSaving] = useState(false);
@@ -58,7 +59,7 @@ export default function Employees() {
     try {
       const params = new URLSearchParams();
       if (q.trim()) params.set("q", q.trim());
-      if (teamId.trim()) params.set("team_id", teamId.trim());
+      if (department.trim()) params.set("department", department.trim());
       params.set("limit", String(limit));
       params.set("offset", "0");
       const data = await apiGet<Employee[]>(`/employees?${params.toString()}`);
@@ -80,9 +81,9 @@ export default function Employees() {
       setEditingId(emp.employee_id);
       setForm({
         full_name: emp.full_name ?? "",
+        department: emp.department ?? "",
         email: emp.email ?? "",
         title: emp.title ?? "",
-        team_id: emp.team_id ?? undefined,
         hired_at: emp.hired_at ?? "",
         status: emp.status ?? "active",
         telegram_username: emp.telegram_username ?? "",
@@ -106,8 +107,7 @@ export default function Employees() {
         const v = (form as any)[k];
         if (v !== undefined) payload[k] = v === "" ? null : v;
       };
-      ["full_name","email","title","status","hired_at","telegram_username","phone","notes"].forEach(k => assign(k as any));
-      if (form.team_id !== undefined) payload.team_id = form.team_id === ("" as any) ? null : Number(form.team_id);
+      ["full_name","email","title","status","hired_at","telegram_username","phone","notes","department"].forEach(k => assign(k as any));
       if (form.telegram_user_id !== undefined) payload.telegram_user_id = (form.telegram_user_id as any) === "" ? null : Number(form.telegram_user_id);
       if (form.salary_gross !== undefined) payload.salary_gross = form.salary_gross === ("" as any) ? null : Number(form.salary_gross);
 
@@ -129,7 +129,10 @@ export default function Employees() {
       {/* Filtreler */}
       <form onSubmit={onSearch} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <input placeholder="Ara (ad / e-posta)" value={q} onChange={(e) => setQ(e.target.value)} style={{ padding: 8, minWidth: 260 }} />
-        <input placeholder="Takım ID (ops.)" value={teamId} onChange={(e) => setTeamId(e.target.value)} style={{ padding: 8, width: 140 }} />
+        <select value={department} onChange={(e)=>setDepartment(e.target.value)} style={{ padding: 8 }}>
+          <option value="">Departman (hepsi)</option>
+          {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
         <select value={limit} onChange={(e) => setLimit(Number(e.target.value))} style={{ padding: 8 }}>
           {[20, 50, 100, 200].map((n) => (<option key={n} value={n}>{n}</option>))}
         </select>
@@ -145,8 +148,8 @@ export default function Employees() {
             <tr style={{ background: "#fafafa" }}>
               <th style={{ textAlign: "left", padding: 8 }}>Employee ID</th>
               <th style={{ textAlign: "left", padding: 8 }}>Ad Soyad</th>
+              <th style={{ textAlign: "left", padding: 8 }}>Departman</th>
               <th style={{ textAlign: "left", padding: 8 }}>Ünvan</th>
-              <th style={{ textAlign: "left", padding: 8 }}>Takım ID</th>
               <th style={{ textAlign: "left", padding: 8 }}>İşe Başlama</th>
               <th style={{ textAlign: "left", padding: 8 }}>Durum</th>
               <th style={{ textAlign: "left", padding: 8, width: 140 }}>İşlem</th>
@@ -157,8 +160,8 @@ export default function Employees() {
               <tr key={r.employee_id} style={{ borderTop: "1px solid #f1f1f1" }}>
                 <td style={{ padding: 8, fontFamily: "monospace" }}>{r.employee_id}</td>
                 <td style={{ padding: 8 }}>{r.full_name}</td>
+                <td style={{ padding: 8 }}>{r.department ?? "-"}</td>
                 <td style={{ padding: 8 }}>{r.title ?? "-"}</td>
-                <td style={{ padding: 8 }}>{r.team_id ?? "-"}</td>
                 <td style={{ padding: 8 }}>{r.hired_at ?? "-"}</td>
                 <td style={{ padding: 8 }}>{r.status}</td>
                 <td style={{ padding: 8, display: "flex", gap: 8 }}>
@@ -173,7 +176,7 @@ export default function Employees() {
         </table>
       </div>
 
-      {/* Düzenle Modal – modern kart görünüm */}
+      {/* Düzenle Modal */}
       {editingId && (
         <div style={{
           position: "fixed", inset: 0, background: "rgba(0,0,0,0.40)",
@@ -191,12 +194,17 @@ export default function Employees() {
               </div>
             </div>
 
-            {/* GRID – 2 kolon */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              {/* Sol */}
               <div style={{ display: "grid", gap: 10 }}>
                 <label>Ad Soyad
                   <input value={form.full_name ?? ""} onChange={(e)=>setForm({...form, full_name: e.target.value})} />
+                </label>
+
+                <label>Departman
+                  <select value={form.department ?? ""} onChange={(e)=>setForm({...form, department: e.target.value})}>
+                    <option value="">Seçiniz</option>
+                    {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
                 </label>
 
                 <label>Telegram Kullanıcı Adı
@@ -210,20 +218,15 @@ export default function Employees() {
                 <label>Telefon
                   <input placeholder="+905xxxxxxxxx" value={form.phone ?? ""} onChange={(e)=>setForm({...form, phone: e.target.value})} />
                 </label>
+              </div>
 
+              <div style={{ display: "grid", gap: 10 }}>
                 <label>E-posta
                   <input value={form.email ?? ""} onChange={(e)=>setForm({...form, email: e.target.value})} />
                 </label>
-              </div>
 
-              {/* Sağ */}
-              <div style={{ display: "grid", gap: 10 }}>
                 <label>Ünvan
                   <input value={form.title ?? ""} onChange={(e)=>setForm({...form, title: e.target.value})} />
-                </label>
-
-                <label>Takım ID
-                  <input value={form.team_id ?? ""} onChange={(e)=>setForm({...form, team_id: e.target.value === "" ? undefined : Number(e.target.value)})} />
                 </label>
 
                 <label>İşe Başlama
