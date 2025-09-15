@@ -9,10 +9,10 @@ type Row = {
   employee_id: string;
   full_name: string;
   department: string;
-  count_total: number;
-  avg_first_sec: number | null; // sn
-  avg_close_sec: number;        // sn
-  trend: Trend;                 // ekip Ø = her zaman son 7 gün
+  count_total: number;         // İşlem Sayısı
+  avg_first_sec: number | null; // Ø İlk Yanıt (sn - integer)
+  avg_close_sec: number;       // Ø Sonuçlandırma (sn - integer)
+  trend: Trend;                // ekip Ø = her zaman son 7 gün
 };
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -57,6 +57,7 @@ export default function ReportBonusClose() {
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
+  // ----- STYLES (sıkı ve tutarlı) -----
   const container: React.CSSProperties = {
     maxWidth: 1200,
     margin: "0 auto",
@@ -119,7 +120,7 @@ export default function ReportBonusClose() {
 
       {/* Bilgilendirme */}
       <div style={{ fontSize: 12, color: "#666" }}>
-        Trend, **her zaman** <b>son 7 gün ekip ortalamasına</b> göre hesaplanır. Tarih seçimi yalnızca tablo satırlarını (kişisel metrikleri) sınırlar.
+        Trend, <b>her zaman son 7 gün ekip ortalamasına</b> göre hesaplanır. Tarih seçimi yalnızca tablo satırlarını (kişisel metrikleri) sınırlar.
       </div>
 
       {/* Tablo */}
@@ -146,14 +147,19 @@ export default function ReportBonusClose() {
                     {r.employee_id} • {r.department}
                   </div>
                 </td>
+
                 <td style={tdRight}>{r.count_total}</td>
-                <td style={tdRight}>{r.avg_first_sec is not None ? fmtMMSS(r.avg_first_sec) : "—"}</td>
+                <td style={tdRight}>{r.avg_first_sec !== null ? fmtMMSS(r.avg_first_sec) : "—"}</td>
                 <td style={tdRight}>{fmtMMSS(r.avg_close_sec)}</td>
+
                 <td style={tdLeft}>
                   <span style={{ marginRight: 6 }}>{r.trend.emoji}</span>
-                  <b>{r.trend.pct is null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}</b>
+                  <b>
+                    {r.trend.pct === null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}
+                  </b>
                   <div style={subNote}>Ekip Ø: {fmtMMSS(r.trend.team_avg_close_sec)}</div>
                 </td>
+
                 <td style={tdLeft}>
                   <Link to={`/employees/${encodeURIComponent(r.employee_id)}?tab=activity`}>Kişi sayfası</Link>
                 </td>
