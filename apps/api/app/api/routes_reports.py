@@ -7,7 +7,7 @@ from statistics import mean
 from typing import Literal, Dict, List, Tuple
 
 from app.deps import get_db, RolesAllowed
-from app.models.events import Event
+from app.models.events import Event, RawMessage
 from app.models.models import Employee
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -22,17 +22,56 @@ def _parse_date(s: str | None):
     except Exception:
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
 
-def _sign_emoji(pct: float) -> str:
-    # pct > 0 => ekipten yavaş (kötü), pct < 0 => hızlı (iyi)
+def _sign_emoji(pct: float | None) -> str:
     if pct is None:
         return "⚪"
     if pct > 3:
         return "🔴⬆️"
     if pct < -3:
         return "🟢⬇️"
-    return "⚪"  # ±3% aralığı nötr
+    return "⚪"  # ±3%
 
-# ---------- BONUS: kişi bazlı kapanış raporu ----------
+def _root_origin_ts(chat_id: int, start_msg_id: int, db: Session, cache: Dict[Tuple[int,int], datetime | None]) -> datetime | None:
+    """
+    Reply zincirini yukarı doğru takip ederek KÖK origin mesajının zamanını döndürür.
+    RawMessage.json içindeki reply_to_message.message_id alanını kullanır.
+    """
+    current_id = start_msg_id
+    visited = set()
+    while True:
+        key = (chat_id, current_id)
+        if key in cache:
+            return cache[key]
+        if key in visited:
+            cache[key] = None
+            return None
+        visited.add(key)
+
+        raw: RawMessage | None = (
+            db.query(RawMessage)
+            .filter(RawMessage.chat_id == chat_id, RawMessage.msg_id == current_id)
+            .first()
+        )
+        if not raw:
+            cache[key] = None
+            return None
+
+        try:
+            j = raw.json or {}
+            rt = j.get("message") or j.get("edited_message") or j.get("channel_post") or j.get("edited_channel_post") or {}
+            replied = rt.get("reply_to_message") or {}
+            parent_id = replied.get("message_id")
+        except Exception:
+            parent_id = None
+
+        if parent_id:
+            current_id = int(parent_id)
+            continue
+        else:
+            cache[(chat_id, start_msg_id)] = raw.ts
+            return raw.ts
+
+# ---------- BONUS: kişi bazlı kapanış ve ilk yanıt raporu (sn) ----------
 @router.get(
     "/bonus/close-time",
     dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))],
@@ -46,26 +85,44 @@ def bonus_close_time(
     db: Session = Depends(get_db),
 ):
     """
-    BONUS departmanı için 'kapanış süresi' raporu.
-    Sütunlar: personel, işlem sayısı, Ø ilk yanıt (sn), Ø sonuçlandırma (sn), trend (ekip ort. karşı).
-    - close tipleri: reply_close, approve, reject
-    - base = corr_id'de reply_first varsa first.ts, yoksa origin.ts
-    - ilk yanıt = first.ts - origin.ts (ikisi de varsa)
-    - sadece employee_id eşleşmiş kişiler (employees.department='Bonus')
+    BONUS departmanı için (employees.department='Bonus') kişi bazlı rapor.
+    Sütunlar:
+      - personel
+      - işlem sayısı (close tipleri adedi)
+      - Ø İlk Yanıt (sn): kişinin reply_first.ts - KÖK origin.ts
+      - Ø Sonuçlandırma (sn): kişinin close.ts - KÖK origin.ts
+      - Trend: kişinin Ø sonuçlandırması, ekip Ø sonuçlandırmasına göre (% ve emoji)
+    Kurallar:
+      - close tipleri: reply_close, approve, reject
+      - KÖK origin, reply zinciri en baştaki mesajdır (reply_to_message zinciri takip edilir).
+      - employee_id eşleşmiş kayıtlar ve department='Bonus' dikkate alınır.
     """
-    # Tarih aralığı
-    dt_to = _parse_date(to) or datetime.now(timezone.utc) + timedelta(days=1)
+    dt_to = _parse_date(to) or (datetime.now(timezone.utc) + timedelta(days=1))
     dt_from = _parse_date(frm) or (dt_to - timedelta(days=7))
 
     # Bonus departmanındaki personeller
-    bonus_emp_ids = {
-        r.employee_id for r in db.query(Employee.employee_id).filter(Employee.department == "Bonus").all()
-    }
+    bonus_emp_rows = db.query(Employee.employee_id, Employee.full_name, Employee.department).filter(Employee.department == "Bonus").all()
+    bonus_emp_ids = {r[0] for r in bonus_emp_rows}
+    emp_info = {r[0]: (r[1] or r[0], r[2] or "Bonus") for r in bonus_emp_rows}
     if not bonus_emp_ids:
         return []
 
-    # Close eventleri
     close_types = ("reply_close", "approve", "reject")
+
+    # first ve close eventleri (bonus + employee_id var + tarih)
+    first_rows: List[Event] = (
+        db.query(Event)
+        .filter(
+            Event.source_channel == "bonus",
+            Event.type == "reply_first",
+            Event.employee_id.isnot(None),
+            Event.employee_id.in_(bonus_emp_ids),
+            Event.ts >= dt_from,
+            Event.ts < dt_to,
+        )
+        .order_by(Event.ts.asc())
+        .all()
+    )
     close_rows: List[Event] = (
         db.query(Event)
         .filter(
@@ -79,114 +136,74 @@ def bonus_close_time(
         .order_by(Event.ts.asc())
         .all()
     )
-    if not close_rows:
+    if not first_rows and not close_rows:
         return []
 
-    # İlgili corr_id seti
-    corr_ids = list({e.correlation_id for e in close_rows})
+    # kök origin ts cache
+    root_cache: Dict[Tuple[int,int], datetime | None] = {}
 
-    # İlk first'ler
-    first_map: Dict[str, datetime] = {}
-    for e in (
-        db.query(Event)
-        .filter(Event.correlation_id.in_(corr_ids), Event.type == "reply_first")
-        .order_by(Event.ts.asc())
-        .all()
-    ):
-        if e.correlation_id not in first_map:
-            first_map[e.correlation_id] = e.ts
-
-    # İlk origin'ler
-    origin_map: Dict[str, datetime] = {}
-    for e in (
-        db.query(Event)
-        .filter(Event.correlation_id.in_(corr_ids), Event.type == "origin")
-        .order_by(Event.ts.asc())
-        .all()
-    ):
-        if e.correlation_id not in origin_map:
-            origin_map[e.correlation_id] = e.ts
-
-    # İlk yanıt süreleri için origin->first farkları
-    # corr_id bazında tek bir ilk-yanıt süresi olacak (first ve origin varsa)
-    first_diff_sec_map: Dict[str, float] = {}
-    for cid, fts in first_map.items():
-        ots = origin_map.get(cid)
-        if ots and fts >= ots:
-            first_diff_sec_map[cid] = (fts - ots).total_seconds()
-
-    # Kişi bazında topla
-    per_emp_close_secs: Dict[str, List[float]] = {}
+    # kişi bazında süreler (sn)
     per_emp_first_secs: Dict[str, List[float]] = {}
-    per_emp_count: Dict[str, int] = {}
+    per_emp_close_secs: Dict[str, List[float]] = {}
 
-    # ekip ortalaması (tüm close kayıtları üzerinden)
-    all_close_secs: List[float] = []
-
-    for c in close_rows:
-        base_ts = first_map.get(c.correlation_id) or origin_map.get(c.correlation_id)
-        if not base_ts:
+    # Ø İlk Yanıt: reply_first.ts - kök origin.ts
+    for e in first_rows:
+        root_ts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
+        if not root_ts:
             continue
-        sec = (c.ts - base_ts).total_seconds()
+        sec = (e.ts - root_ts).total_seconds()
         if sec < 0:
             continue
-        emp_id = c.employee_id
-        if not emp_id:
-            continue
-        per_emp_close_secs.setdefault(emp_id, []).append(sec)
-        per_emp_count[emp_id] = per_emp_count.get(emp_id, 0) + 1
-        all_close_secs.append(sec)
+        per_emp_first_secs.setdefault(e.employee_id, []).append(sec)
 
-        # ilk yanıt süresi aynı corr için varsa ekle
-        first_sec = first_diff_sec_map.get(c.correlation_id)
-        if first_sec is not None and first_sec >= 0:
-            per_emp_first_secs.setdefault(emp_id, []).append(first_sec)
+    # Ø Sonuçlandırma: close.ts - kök origin.ts
+    for e in close_rows:
+        root_ts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
+        if not root_ts:
+            continue
+        sec = (e.ts - root_ts).total_seconds()
+        if sec < 0:
+            continue
+        per_emp_close_secs.setdefault(e.employee_id, []).append(sec)
 
     if not per_emp_close_secs:
         return []
 
-    # Ekip ortalaması (close)
-    team_avg_close_sec = mean(all_close_secs) if all_close_secs else None
+    # ekip Ø (close)
+    all_close = [s for arr in per_emp_close_secs.values() for s in arr]
+    team_avg_close_sec = mean(all_close) if all_close else None
 
-    # Personel bilgileri
-    emp_info: Dict[str, Tuple[str, str]] = {}
-    for e in db.query(Employee).filter(Employee.employee_id.in_(list(per_emp_close_secs.keys()))).all():
-        emp_info[e.employee_id] = (e.full_name or e.employee_id, e.department or "-")
-
-    # Satırları oluştur
+    # satırlar
     rows = []
     for emp_id, close_secs in per_emp_close_secs.items():
+        full_name, dept = emp_info.get(emp_id, (emp_id, "Bonus"))
         avg_close_sec = mean(close_secs)
         first_secs = per_emp_first_secs.get(emp_id, [])
         avg_first_sec = mean(first_secs) if first_secs else None
-        # Trend: ekip ortalamasına göre
         trend_pct = None
         if team_avg_close_sec and team_avg_close_sec > 0:
             trend_pct = round(((avg_close_sec - team_avg_close_sec) / team_avg_close_sec) * 100, 0)
-        emoji = _sign_emoji(trend_pct if trend_pct is not None else 0)
-        full_name, dept = emp_info.get(emp_id, (emp_id, "-"))
 
         rows.append({
             "employee_id": emp_id,
             "full_name": full_name,
             "department": dept,
-            "count_total": len(close_secs),                    # İşlem Sayısı
-            "avg_first_sec": round(avg_first_sec, 1) if avg_first_sec is not None else None,  # Ø İlk Yanıt (sn)
-            "avg_close_sec": round(avg_close_sec, 1),          # Ø Sonuçlandırma (sn)
+            "count_total": len(close_secs),                              # İşlem Sayısı
+            "avg_first_sec": int(round(avg_first_sec)) if avg_first_sec is not None else None,  # saniye (tam sayı)
+            "avg_close_sec": int(round(avg_close_sec)),                  # saniye (tam sayı)
             "trend": {
-                "emoji": emoji,
-                "pct": trend_pct,  # negatif = iyi (hızlı), pozitif = kötü (yavaş)
-                "team_avg_close_sec": round(team_avg_close_sec, 1) if team_avg_close_sec else None,
+                "emoji": _sign_emoji(trend_pct),
+                "pct": trend_pct,
+                "team_avg_close_sec": int(round(team_avg_close_sec)) if team_avg_close_sec else None,
             }
         })
 
-    # Sıralama
+    # sıralama
     if order == "avg_desc":
         rows.sort(key=lambda r: (r["avg_close_sec"],), reverse=True)
     elif order == "cnt_desc":
         rows.sort(key=lambda r: (r["count_total"], r["avg_close_sec"]), reverse=True)
     else:  # avg_asc default
-        rows.sort(key=lambda r: (r["avg_close_sec"], r["count_total"] * -1))
+        rows.sort(key=lambda r: (r["avg_close_sec"], -r["count_total"]))
 
-    # Sayfalama
     return rows[offset: offset + limit]
