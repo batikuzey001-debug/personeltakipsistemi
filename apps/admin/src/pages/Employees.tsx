@@ -1,4 +1,5 @@
 // apps/admin/src/pages/Employees.tsx
+// (Yalnız bu dosyada başta aşağıdaki sabiti ekledik ve department select kullandık; telegram alanlarını readOnly yaptık.)
 import React, { useEffect, useState } from "react";
 
 const API = import.meta.env.VITE_API_BASE_URL as string;
@@ -10,7 +11,7 @@ type Employee = {
   email?: string | null;
   department?: string | null;
   title?: string | null;
-  hired_at?: string | null; // YYYY-MM-DD
+  hired_at?: string | null;
   status: string;
   telegram_username?: string | null;
   telegram_user_id?: number | null;
@@ -26,7 +27,6 @@ async function apiGet<T>(path: string): Promise<T> {
   if (!r.ok) throw new Error(await r.text());
   return (await r.json()) as T;
 }
-
 async function apiPatch<T>(path: string, body: any): Promise<T> {
   const token = localStorage.getItem("token") || "";
   const r = await fetch(`${API}${path}`, {
@@ -48,27 +48,21 @@ export default function Employees() {
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
-  // Düzenleme modal
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<Partial<Employee>>({});
   const [saving, setSaving] = useState(false);
 
   async function load() {
-    setErr(null);
-    setLoading(true);
+    setErr(null); setLoading(true);
     try {
       const params = new URLSearchParams();
       if (q.trim()) params.set("q", q.trim());
       if (department.trim()) params.set("department", department.trim());
-      params.set("limit", String(limit));
-      params.set("offset", "0");
+      params.set("limit", String(limit)); params.set("offset", "0");
       const data = await apiGet<Employee[]>(`/employees?${params.toString()}`);
       setRows(data);
-    } catch (e: any) {
-      setErr(e?.message || "Liste alınamadı");
-    } finally {
-      setLoading(false);
-    }
+    } catch (e: any) { setErr(e?.message || "Liste alınamadı"); }
+    finally { setLoading(false); }
   }
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
@@ -92,9 +86,7 @@ export default function Employees() {
         salary_gross: (emp.salary_gross as any) ?? undefined,
         notes: emp.notes ?? "",
       });
-    } catch (e: any) {
-      setErr(e?.message || "Kayıt alınamadı");
-    }
+    } catch (e: any) { setErr(e?.message || "Kayıt alınamadı"); }
   }
 
   async function saveEdit(e: React.FormEvent) {
@@ -103,10 +95,7 @@ export default function Employees() {
     setSaving(true); setErr(null); setOk(null);
     try {
       const payload: any = {};
-      const assign = (k: keyof Employee) => {
-        const v = (form as any)[k];
-        if (v !== undefined) payload[k] = v === "" ? null : v;
-      };
+      const assign = (k: keyof Employee) => { const v = (form as any)[k]; if (v !== undefined) payload[k] = v === "" ? null : v; };
       ["full_name","email","title","status","hired_at","telegram_username","phone","notes","department"].forEach(k => assign(k as any));
       if (form.telegram_user_id !== undefined) payload.telegram_user_id = (form.telegram_user_id as any) === "" ? null : Number(form.telegram_user_id);
       if (form.salary_gross !== undefined) payload.salary_gross = form.salary_gross === ("" as any) ? null : Number(form.salary_gross);
@@ -115,11 +104,8 @@ export default function Employees() {
       setOk("Kayıt güncellendi");
       setEditingId(null);
       await load();
-    } catch (e: any) {
-      setErr(e?.message || "Kaydedilemedi");
-    } finally {
-      setSaving(false);
-    }
+    } catch (e: any) { setErr(e?.message || "Kaydedilemedi"); }
+    finally { setSaving(false); }
   }
 
   return (
@@ -169,19 +155,14 @@ export default function Employees() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && (
-              <tr><td colSpan={7} style={{ padding: 12, color: "#777" }}>Kayıt yok.</td></tr>
-            )}
+            {rows.length === 0 && (<tr><td colSpan={7} style={{ padding: 12, color: "#777" }}>Kayıt yok.</td></tr>)}
           </tbody>
         </table>
       </div>
 
       {/* Düzenle Modal */}
       {editingId && (
-        <div style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.40)",
-          display: "grid", placeItems: "center", zIndex: 1000
-        }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.40)", display: "grid", placeItems: "center", zIndex: 1000 }}>
           <form onSubmit={saveEdit} style={{
             width: 720, background: "#fff", borderRadius: 16, padding: 20,
             boxShadow: "0 18px 40px rgba(0,0,0,0.25)", display: "grid", gap: 16
@@ -208,11 +189,11 @@ export default function Employees() {
                 </label>
 
                 <label>Telegram Kullanıcı Adı
-                  <input placeholder="@kullanici" value={form.telegram_username ?? ""} onChange={(e)=>setForm({...form, telegram_username: e.target.value})} />
+                  <input placeholder="@kullanici" value={form.telegram_username ?? ""} onChange={(e)=>setForm({...form, telegram_username: e.target.value})} readOnly />
                 </label>
 
                 <label>Telegram User ID
-                  <input placeholder="örn. 8147xxxxx" value={form.telegram_user_id ?? "" as any} onChange={(e)=>setForm({...form, telegram_user_id: e.target.value === "" ? undefined : Number(e.target.value)})} />
+                  <input placeholder="örn. 8147xxxxx" value={form.telegram_user_id ?? "" as any} onChange={(e)=>setForm({...form, telegram_user_id: e.target.value === "" ? undefined : Number(e.target.value)})} readOnly />
                 </label>
 
                 <label>Telefon
