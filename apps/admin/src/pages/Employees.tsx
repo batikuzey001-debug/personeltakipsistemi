@@ -1,6 +1,6 @@
 // apps/admin/src/pages/Employees.tsx
-// (Yalnız bu dosyada başta aşağıdaki sabiti ekledik ve department select kullandık; telegram alanlarını readOnly yaptık.)
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 const API = import.meta.env.VITE_API_BASE_URL as string;
 const DEPARTMENTS = ["Call Center", "Canlı", "Finans", "Bonus", "Admin"] as const;
@@ -11,7 +11,7 @@ type Employee = {
   email?: string | null;
   department?: string | null;
   title?: string | null;
-  hired_at?: string | null;
+  hired_at?: string | null; // YYYY-MM-DD
   status: string;
   telegram_username?: string | null;
   telegram_user_id?: number | null;
@@ -99,7 +99,6 @@ export default function Employees() {
       ["full_name","email","title","status","hired_at","telegram_username","phone","notes","department"].forEach(k => assign(k as any));
       if (form.telegram_user_id !== undefined) payload.telegram_user_id = (form.telegram_user_id as any) === "" ? null : Number(form.telegram_user_id);
       if (form.salary_gross !== undefined) payload.salary_gross = form.salary_gross === ("" as any) ? null : Number(form.salary_gross);
-
       await apiPatch<Employee>(`/employees/${encodeURIComponent(editingId)}`, payload);
       setOk("Kayıt güncellendi");
       setEditingId(null);
@@ -138,20 +137,23 @@ export default function Employees() {
               <th style={{ textAlign: "left", padding: 8 }}>Ünvan</th>
               <th style={{ textAlign: "left", padding: 8 }}>İşe Başlama</th>
               <th style={{ textAlign: "left", padding: 8 }}>Durum</th>
-              <th style={{ textAlign: "left", padding: 8, width: 140 }}>İşlem</th>
+              <th style={{ textAlign: "left", padding: 8, width: 180 }}>İşlem</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.employee_id} style={{ borderTop: "1px solid #f1f1f1" }}>
-                <td style={{ padding: 8, fontFamily: "monospace" }}>{r.employee_id}</td>
+                <td style={{ padding: 8, fontFamily: "monospace" }}>
+                  <Link to={`/employees/${encodeURIComponent(r.employee_id)}`}>{r.employee_id}</Link>
+                </td>
                 <td style={{ padding: 8 }}>{r.full_name}</td>
                 <td style={{ padding: 8 }}>{r.department ?? "-"}</td>
                 <td style={{ padding: 8 }}>{r.title ?? "-"}</td>
                 <td style={{ padding: 8 }}>{r.hired_at ?? "-"}</td>
                 <td style={{ padding: 8 }}>{r.status}</td>
-                <td style={{ padding: 8, display: "flex", gap: 8 }}>
+                <td style={{ padding: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <button onClick={() => openEdit(r.employee_id)}>Düzenle</button>
+                  <Link to={`/employees/${encodeURIComponent(r.employee_id)}`} style={{ alignSelf: "center" }}>Kişi sayfasına git</Link>
                 </td>
               </tr>
             ))}
@@ -160,13 +162,10 @@ export default function Employees() {
         </table>
       </div>
 
-      {/* Düzenle Modal */}
+      {/* Düzenle Modal (form) */}
       {editingId && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.40)", display: "grid", placeItems: "center", zIndex: 1000 }}>
-          <form onSubmit={saveEdit} style={{
-            width: 720, background: "#fff", borderRadius: 16, padding: 20,
-            boxShadow: "0 18px 40px rgba(0,0,0,0.25)", display: "grid", gap: 16
-          }}>
+          <form onSubmit={saveEdit} style={{ width: 720, background: "#fff", borderRadius: 16, padding: 20, boxShadow: "0 18px 40px rgba(0,0,0,0.25)", display: "grid", gap: 16 }}>
             <div style={{ display: "flex", alignItems: "center" }}>
               <h2 style={{ margin: 0 }}>Personel Kartı • {editingId}</h2>
               <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
@@ -177,47 +176,22 @@ export default function Employees() {
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div style={{ display: "grid", gap: 10 }}>
-                <label>Ad Soyad
-                  <input value={form.full_name ?? ""} onChange={(e)=>setForm({...form, full_name: e.target.value})} />
-                </label>
-
+                <label>Ad Soyad <input value={form.full_name ?? ""} onChange={(e)=>setForm({...form, full_name: e.target.value})} /></label>
                 <label>Departman
                   <select value={form.department ?? ""} onChange={(e)=>setForm({...form, department: e.target.value})}>
                     <option value="">Seçiniz</option>
                     {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
                   </select>
                 </label>
-
-                <label>Telegram Kullanıcı Adı
-                  <input placeholder="@kullanici" value={form.telegram_username ?? ""} onChange={(e)=>setForm({...form, telegram_username: e.target.value})} readOnly />
-                </label>
-
-                <label>Telegram User ID
-                  <input placeholder="örn. 8147xxxxx" value={form.telegram_user_id ?? "" as any} onChange={(e)=>setForm({...form, telegram_user_id: e.target.value === "" ? undefined : Number(e.target.value)})} readOnly />
-                </label>
-
-                <label>Telefon
-                  <input placeholder="+905xxxxxxxxx" value={form.phone ?? ""} onChange={(e)=>setForm({...form, phone: e.target.value})} />
-                </label>
+                <label>Telegram Kullanıcı Adı <input value={form.telegram_username ?? ""} onChange={(e)=>setForm({...form, telegram_username: e.target.value})} readOnly /></label>
+                <label>Telegram User ID <input value={form.telegram_user_id ?? "" as any} onChange={(e)=>setForm({...form, telegram_user_id: e.target.value === "" ? undefined : Number(e.target.value)})} readOnly /></label>
+                <label>Telefon <input value={form.phone ?? ""} onChange={(e)=>setForm({...form, phone: e.target.value})} /></label>
               </div>
-
               <div style={{ display: "grid", gap: 10 }}>
-                <label>E-posta
-                  <input value={form.email ?? ""} onChange={(e)=>setForm({...form, email: e.target.value})} />
-                </label>
-
-                <label>Ünvan
-                  <input value={form.title ?? ""} onChange={(e)=>setForm({...form, title: e.target.value})} />
-                </label>
-
-                <label>İşe Başlama
-                  <input type="date" value={form.hired_at ?? ""} onChange={(e)=>setForm({...form, hired_at: e.target.value})} />
-                </label>
-
-                <label>Maaş (brüt)
-                  <input type="number" step="0.01" placeholder="örn. 35000" value={form.salary_gross ?? "" as any} onChange={(e)=>setForm({...form, salary_gross: e.target.value === "" ? undefined : Number(e.target.value)})} />
-                </label>
-
+                <label>E-posta <input value={form.email ?? ""} onChange={(e)=>setForm({...form, email: e.target.value})} /></label>
+                <label>Ünvan <input value={form.title ?? ""} onChange={(e)=>setForm({...form, title: e.target.value})} /></label>
+                <label>İşe Başlama <input type="date" value={form.hired_at ?? ""} onChange={(e)=>setForm({...form, hired_at: e.target.value})} /></label>
+                <label>Maaş (brüt) <input type="number" step="0.01" value={form.salary_gross ?? "" as any} onChange={(e)=>setForm({...form, salary_gross: e.target.value === "" ? undefined : Number(e.target.value)})} /></label>
                 <label>Durum
                   <select value={form.status ?? "active"} onChange={(e)=>setForm({...form, status: e.target.value})}>
                     <option value="active">active</option>
@@ -227,9 +201,7 @@ export default function Employees() {
               </div>
             </div>
 
-            <label>Notlar
-              <textarea rows={4} placeholder="İç notlar…" value={form.notes ?? ""} onChange={(e)=>setForm({...form, notes: e.target.value})} />
-            </label>
+            <label>Notlar <textarea rows={4} value={form.notes ?? ""} onChange={(e)=>setForm({...form, notes: e.target.value})} /></label>
 
             {err && <div style={{ color:"#b00020", fontSize:12 }}>{err}</div>}
             {ok && <div style={{ color:"green", fontSize:12 }}>{ok}</div>}
