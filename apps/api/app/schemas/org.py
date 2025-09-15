@@ -6,7 +6,6 @@ class TeamOut(BaseModel):
     id: int
     name: str
     parent_id: int | None
-
     class Config:
         from_attributes = True
 
@@ -18,13 +17,12 @@ class EmployeeOut(BaseModel):
     title: str | None
     hired_at: date | None
     status: str
-
-    # İsteğe bağlı ek alanlar (kart için görünür olabilir)
-    # telegram_username: str | None = None
-    # telegram_user_id: int | None = None
-    # phone: str | None = None
-    # salary_gross: float | None = None
-    # notes: str | None = None
+    # Kart ek alanları
+    telegram_username: str | None = None
+    telegram_user_id: int | None = None
+    phone: str | None = None
+    salary_gross: float | None = None
+    notes: str | None = None
 
     class Config:
         from_attributes = True
@@ -37,7 +35,7 @@ class EmployeeUpdateIn(BaseModel):
     hired_at: date | None = None
     status: str | None = None  # "active" | "inactive"
 
-    # Kartta istediğin ek alanlar:
+    # Kart ek alanları
     telegram_username: str | None = None
     telegram_user_id: int | None = None
     phone: str | None = None
