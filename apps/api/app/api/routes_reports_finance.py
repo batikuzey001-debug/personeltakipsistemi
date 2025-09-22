@@ -16,21 +16,21 @@ router = APIRouter(prefix="/reports/finance", tags=["reports:finance"])
 EVENTS_TABLE = "events"
 EMPLOYEES_TABLE = "employees"
 
-# Kolon adları (DB'de bunlar mevcut olmalı)
+# Kolon adları
 TS_COL = "ts"
 TYPE_COL = "type"
 EMPLOYEE_ID_COL = "employee_id"
 EMPLOYEE_FULLNAME_COL = "full_name"
 EMPLOYEE_DEPT_COL = "department"
 
-# Webhook JSON’una göre thread anahtarı 'corr' (DB’de de aynı isimde tutuluyor varsayıyoruz)
-THREAD_COL = "corr"
+# DB'de mevcut olan thread kolonu (loglarda çalıştığı görülen)
+THREAD_COL = "correlation_id"  # ← düzeltildi (corr yerine correlation_id)
 
 FIRST_REPLY_TYPES = ("reply_first",)
 CLOSE_TYPES = ("approve", "reply_close", "reject")
 DEPT_NAME = "Finans"  # employees.department filtresi
 
-# ---- Panelin beklediği şema (Bonus ile birebir) ----
+# ---- Panel (Bonus) ile birebir uyumlu şema ----
 class Trend(TypedDict):
     emoji: str
     pct: float | None
@@ -50,14 +50,12 @@ def _parse_date(val: Optional[str], default_dt: datetime) -> datetime:
     if not val:
         return default_dt
     try:
-        # YYYY-MM-DD
         return datetime.fromisoformat(val)
     except Exception:
         raise HTTPException(status_code=422, detail=f"Invalid date: {val}")
 
 
 def _order_sql(order: str) -> str:
-    # Bonus tarafındaki seçeneklere paralel basit sıralama
     mapping = {
         "avg_asc": "avg_close_sec ASC, count_total DESC",
         "avg_desc": "avg_close_sec DESC, count_total DESC",
@@ -68,15 +66,7 @@ def _order_sql(order: str) -> str:
 
 def _sql_finance_without_channel(order_clause: str) -> str:
     """
-    Kanal sütunu bilinmediği için yalnızca departman bazlı filtre ile hesaplıyoruz.
-    Mantık:
-      - origin: her iş parçasının kökü (THREAD_COL ile gruplanır)
-      - first_reply: ilk yanıt ts
-      - first_close: ilk kapanış ts (approve/reply_close/reject)
-      - per_thread: süreler
-      - per_emp: kişi bazında agregasyon
-      - team_7d: seçili aralığın bitişine göre son 7 gün ekip ortalaması (çözüm süresi)
-    Not: employees.department = 'Finans' filtresi uygulanır.
+    Kanal sütunu adı belirsiz olduğu için yalnızca departman filtresi ile hesaplanır.
     """
     return f"""
     WITH
@@ -182,7 +172,7 @@ def finance_close_time(
 ):
     """
     Finance (departman=Finans) kapanış performansı — Bonus şemasına birebir uyumlu Row[] döner.
-    Not: Kanal sütunu adı bilinmediği için, yalnızca departman filtresi uygulanır.
+    Not: Kanal sütunu adı belirsiz olduğu için, yalnızca departman filtresi uygulanır.
     """
     today = datetime.utcnow().date()
     _frm = _parse_date(frm, default_dt=datetime.combine(today - timedelta(days=6), datetime.min.time()))
@@ -201,15 +191,14 @@ def finance_close_time(
     try:
         rows = db.execute(text(sql), params).mappings().all()
     except Exception as exc:
+        # Neden: thread kolonu yanlışsa burada patlar → correlation_id dışı bir isimse tek satırda değiştir.
         raise HTTPException(status_code=500, detail=f"Finance close-time query failed (department-only). Error: {exc}")
 
     out: List[Row] = []
-    # team_avg_close_sec tüm satırlar için aynı (CTE'den tek satır gelir)
     team_avg = rows[0]["team_avg_close_sec"] if rows else None
 
     for r in rows:
         avg_close = float(r["avg_close_sec"]) if r["avg_close_sec"] is not None else None
-        # Trend: ekibin son 7g ortalamasına göre (pozitif = daha hızlı)
         if team_avg and avg_close:
             pct = round((team_avg - avg_close) * 100.0 / team_avg, 2)
         else:
