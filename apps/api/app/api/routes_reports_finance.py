@@ -16,17 +16,15 @@ router = APIRouter(prefix="/reports/finance", tags=["reports:finance"])
 # ---- ŞEMA SABİTLERİ ----
 TS_COL = "ts"
 TYPE_COL = "type"
-CHANNEL_COL = "channel"
 EMPLOYEE_ID_COL = "employee_id"
 EMPLOYEE_FULLNAME_COL = "full_name"
 EMPLOYEE_DEPT_COL = "department"
 EMPLOYEES_TABLE = "employees"
 EVENTS_TABLE = "events"
 
-# Webhook çıktısına göre thread key kolonumuz "corr".
-# Yine de esneklik için diğer olası adları da ekliyoruz (varsa otomatik tespit eder).
+# Webhook çıktısına göre thread key kolon adaylarında 'corr' ilk sırada.
 THREAD_KEY_CANDIDATES = (
-    "corr",              # ← ÖNCE "corr" (webhook JSON'unda gördüğümüz alan)
+    "corr",
     "origin_msg_id",
     "root_message_id",
     "thread_key",
@@ -39,9 +37,19 @@ THREAD_KEY_CANDIDATES = (
     "correlation_id",
 )
 
+# Bazı şemalarda 'channel' yerine farklı isimler kullanılabiliyor.
+CHANNEL_COL_CANDIDATES = (
+    "channel",
+    "event_channel",
+    "chan",
+    "category",
+    "label",
+    "tag",
+)
+
 FIRST_REPLY_TYPES = ("reply_first",)
 CLOSE_TYPES = ("approve", "reply_close", "reject")
-DEPT_NAME = "Finans"
+DEPT_NAME = "Finans"  # employees.department filtresi
 
 
 # ---- MODELLER ----
@@ -84,11 +92,7 @@ def _order_sql(order: str) -> str:
     return allowed.get(order, allowed["cnt_desc"])
 
 
-def _detect_thread_key_col(db: Session) -> str:
-    """
-    events tablosunda mevcut olan ilk uygun thread kolonu döner.
-    Adaylar THREAD_KEY_CANDIDATES sırasına göre kontrol edilir (öncelik: 'corr').
-    """
+def _detect_col(db: Session, table: str, candidates: tuple[str, ...], what: str) -> str:
     sql = text(
         """
         SELECT column_name
@@ -97,25 +101,23 @@ def _detect_thread_key_col(db: Session) -> str:
         ORDER BY array_position(:cands, column_name)
         """
     )
-    res = db.execute(
-        sql, {"tbl": EVENTS_TABLE, "cands": list(THREAD_KEY_CANDIDATES)}
-    ).scalars().first()
-    if not res:
+    found = db.execute(sql, {"tbl": table, "cands": list(candidates)}).scalars().first()
+    if not found:
         raise HTTPException(
             status_code=500,
             detail=(
-                "Finance close-time query failed: could not detect a thread key column. "
-                f"Tried: {', '.join(THREAD_KEY_CANDIDATES)} in table '{EVENTS_TABLE}'. "
-                "Lütfen events tablosundaki kök mesaj anahtarının adını endpointte ?thread_col=... ile geçin."
+                f"Could not detect {what} column in '{table}'. "
+                f"Tried: {', '.join(candidates)}. "
+                f"Lütfen endpoint'e ?{what}=_kolon_adi parametresi verin."
             ),
         )
-    return res
+    return found
 
 
-def _close_time_query_sql(thread_col: str, order_clause: str) -> str:
+def _close_time_query_sql(thread_col: str, channel_col: str, order_clause: str) -> str:
     """
-    DİKKAT: events tablosunda her kullanım 'e.{thread_col}' şeklinde.
-    Hiçbir yerde 'e.thread_key' literal KALMAMALI; thread_key sadece alias olarak kullanılır.
+    DİKKAT: events tablosunda her kullanım 'e.{thread_col}' ve 'e.{channel_col}' ile yapılır.
+    Literal 'e.thread_key' veya 'e.channel' KALMAMALI; 'thread_key' sadece alias olarak kullanılır.
     """
     return f"""
     WITH
@@ -125,7 +127,7 @@ def _close_time_query_sql(thread_col: str, order_clause: str) -> str:
         e.{thread_col}      AS thread_key,
         MIN(e.{TS_COL})     AS origin_ts
       FROM {EVENTS_TABLE} e
-      WHERE e.{CHANNEL_COL} = :channel
+      WHERE e.{channel_col} = :channel
         AND e.{TYPE_COL} = 'origin'
       GROUP BY 1,2
     ),
@@ -134,7 +136,7 @@ def _close_time_query_sql(thread_col: str, order_clause: str) -> str:
         e.{thread_col}  AS thread_key,
         MIN(e.{TS_COL}) AS first_ts
       FROM {EVENTS_TABLE} e
-      WHERE e.{CHANNEL_COL} = :channel
+      WHERE e.{channel_col} = :channel
         AND e.{TYPE_COL} IN :first_types
       GROUP BY 1
     ),
@@ -143,7 +145,7 @@ def _close_time_query_sql(thread_col: str, order_clause: str) -> str:
         e.{thread_col}  AS thread_key,
         MIN(e.{TS_COL}) AS close_ts
       FROM {EVENTS_TABLE} e
-      WHERE e.{CHANNEL_COL} = :channel
+      WHERE e.{channel_col} = :channel
         AND e.{TYPE_COL} IN :close_types
       GROUP BY 1
     ),
@@ -226,10 +228,9 @@ def finance_close_time_report(
         "name_desc",
     ] = "cnt_desc",
     limit: int = Query(200, ge=1, le=500),
-    thread_col: Optional[str] = Query(
-        None,
-        description="Events.tablosundaki kök mesaj anahtarı kolonu (örn: corr). Varsayılan otomatik tespit; öncelik 'corr'.",
-    ),
+    # Debug / esneklik için parametreler:
+    thread_col: Optional[str] = Query(None, description="Events tablosunda thread anahtarı kolonu (örn: corr)"),
+    channel_col: Optional[str] = Query(None, description="Events tablosunda kanal kolonu (örn: event_channel)"),
     db: Session = Depends(get_db),
 ):
     """
@@ -239,10 +240,11 @@ def finance_close_time_report(
     _frm = _parse_date(frm, default=datetime.combine(today - timedelta(days=6), datetime.min.time()))
     _to = _parse_date(to, default=datetime.combine(today + timedelta(days=1), datetime.min.time()))
 
-    # 1) Dışarıdan verilmişse onu kullan; 2) verilmediyse otomatik tespit (öncelik: 'corr').
-    thread = thread_col or _detect_thread_key_col(db)
+    # Kolon adlarını belirle:
+    thread = thread_col or _detect_col(db, EVENTS_TABLE, THREAD_KEY_CANDIDATES, "thread_col")
+    channel_c = channel_col or _detect_col(db, EVENTS_TABLE, CHANNEL_COL_CANDIDATES, "channel_col")
 
-    sql = _close_time_query_sql(thread_col=thread, order_clause=_order_sql(order))
+    sql = _close_time_query_sql(thread_col=thread, channel_col=channel_c, order_clause=_order_sql(order))
     params = {
         "channel": "finans",
         "first_types": FIRST_REPLY_TYPES,
@@ -258,7 +260,10 @@ def finance_close_time_report(
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Finance close-time query failed. Using thread_col='{thread}'. Error: {exc}",
+            detail=(
+                "Finance close-time query failed. "
+                f"Using thread_col='{thread}', channel_col='{channel_c}'. Error: {exc}"
+            ),
         )
 
     out_rows: List[FinanceCloseRow] = [
