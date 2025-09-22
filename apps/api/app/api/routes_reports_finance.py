@@ -2,29 +2,34 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import List, Optional, Literal, Dict, Any
+from typing import List, Optional, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-# Neden: Proje genelindeki DB oturumu ve ayar mimarisine uymak için.
 from app.db.session import get_db
 
 router = APIRouter(prefix="/reports/finance", tags=["reports:finance"])
 
-# Neden: Kaynak şema olası farklı adlar kullanabilir; tek yerden kontrol edelim.
-THREAD_KEY_COL = "thread_key"          # Örn: root_message_id / origin_msg_id / thread_key
-TS_COL = "ts"                           # Olay timestamp kolonu
+# ==== ŞEMA SABİTLERİ (diğer kolonlar sabit, thread kolonu dinamik tespit edilecek) ====
+TS_COL = "ts"
 TYPE_COL = "type"
 CHANNEL_COL = "channel"
 EMPLOYEE_ID_COL = "employee_id"
+EMPLOYEE_FULLNAME_COL = "full_name"
+EMPLOYEE_DEPT_COL = "department"
+EMPLOYEES_TABLE = "employees"
+EVENTS_TABLE = "events"
 
-FIRST_REPLY_TYPES = ("reply_first",)    # Gerekirse genişletilebilir
+# Olası thread key kolon adayları (sırayla denenecek)
+THREAD_KEY_CANDIDATES = ("origin_msg_id", "root_message_id", "thread_key")
+
+FIRST_REPLY_TYPES = ("reply_first",)
 CLOSE_TYPES = ("approve", "reply_close", "reject")
+DEPT_NAME = "Finans"
 
-DEPT_NAME = "Finans"                    # Sadece Finans departmanını rapora dahil etmek için
 
 # ------------------------------
 # Output Schemas
@@ -38,11 +43,13 @@ class FinanceCloseRow(BaseModel):
     trend_pct: Optional[float] = None
     profile_url: Optional[str] = None
 
+
 class FinanceCloseReport(BaseModel):
     range_from: datetime
     range_to: datetime
     total_records: int
     rows: List[FinanceCloseRow]
+
 
 # ------------------------------
 # Helpers
@@ -53,8 +60,8 @@ def _parse_date(val: Optional[str], default: datetime) -> datetime:
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid date: {val}")
 
+
 def _order_sql(order: str) -> str:
-    # Neden: Güvenli whitelist sıralama.
     allowed = {
         "cnt_desc": "cnt DESC, avg_resolution_sec ASC",
         "cnt_asc": "cnt ASC, avg_resolution_sec ASC",
@@ -67,43 +74,67 @@ def _order_sql(order: str) -> str:
     }
     return allowed.get(order, allowed["cnt_desc"])
 
-# ------------------------------
-# Core Query (channelized)
-# ------------------------------
-def _close_time_query_sql() -> str:
+
+def _detect_thread_key_col(db: Session) -> str:
     """
-    Neden: Bonus/Finans için tek SQL; channel parametresi ile çalışır.
-    Şema varsayımları:
-      - events(tablosu): channel, type, ts, thread_key, employee_id
-      - employees(tablosu): employee_id (RD-xxx), full_name, department
-    Eğer kolon adlarınız farklıysa, dosya başındaki sabitleri değiştirmeniz yeterli.
+    information_schema üzerinden events tablosunda mevcut kolonları kontrol eder
+    ve THREAD_KEY_CANDIDATES içinden ilk bulunanı döner.
+    """
+    sql = text(
+        f"""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = :tbl AND column_name = ANY(:cands)
+        ORDER BY array_position(:cands, column_name)
+        """
+    )
+    res = db.execute(
+        sql,
+        {"tbl": EVENTS_TABLE, "cands": list(THREAD_KEY_CANDIDATES)},
+    ).scalars().first()
+    if not res:
+        # Kullanıcı hızlıca düzenleyebilsin diye anlaşılır hata verelim
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Finance close-time query failed: could not detect thread key column. "
+                f"Tried: {', '.join(THREAD_KEY_CANDIDATES)} in table '{EVENTS_TABLE}'. "
+                "Lütfen events tablosundaki kök mesaj anahtarı kolonu adını bu dosyada sabit olarak belirtin."
+            ),
+        )
+    return res
+
+
+def _close_time_query_sql(thread_col: str, order_clause: str) -> str:
+    """
+    Bonus/Finans için ortak SQL. thread_col dinamik gelir.
     """
     return f"""
     WITH
     origin AS (
       SELECT
         e.{EMPLOYEE_ID_COL} AS employee_id,
-        e.{THREAD_KEY_COL}  AS thread_key,
+        e.{thread_col}      AS thread_key,
         MIN(e.{TS_COL})     AS origin_ts
-      FROM events e
+      FROM {EVENTS_TABLE} e
       WHERE e.{CHANNEL_COL} = :channel
         AND e.{TYPE_COL} = 'origin'
       GROUP BY 1,2
     ),
     first_reply AS (
       SELECT
-        e.{THREAD_KEY_COL} AS thread_key,
-        MIN(e.{TS_COL})    AS first_ts
-      FROM events e
+        e.{thread_col}  AS thread_key,
+        MIN(e.{TS_COL}) AS first_ts
+      FROM {EVENTS_TABLE} e
       WHERE e.{CHANNEL_COL} = :channel
         AND e.{TYPE_COL} IN :first_types
       GROUP BY 1
     ),
     first_close AS (
       SELECT
-        e.{THREAD_KEY_COL} AS thread_key,
-        MIN(e.{TS_COL})    AS close_ts
-      FROM events e
+        e.{thread_col}  AS thread_key,
+        MIN(e.{TS_COL}) AS close_ts
+      FROM {EVENTS_TABLE} e
       WHERE e.{CHANNEL_COL} = :channel
         AND e.{TYPE_COL} IN :close_types
       GROUP BY 1
@@ -130,15 +161,15 @@ def _close_time_query_sql() -> str:
         r.origin_ts,
         r.first_ts,
         r.close_ts,
-        EXTRACT(EPOCH FROM (r.first_ts - r.origin_ts)) AS first_sec,
-        EXTRACT(EPOCH FROM (r.close_ts - r.origin_ts)) AS close_sec
+        EXTRACT(EPOCH FROM (r.first_ts  - r.origin_ts)) AS first_sec,
+        EXTRACT(EPOCH FROM (r.close_ts  - r.origin_ts)) AS close_sec
       FROM ranged r
-      WHERE r.close_ts IS NOT NULL -- yalnızca kapanışı olanlar
+      WHERE r.close_ts IS NOT NULL
     ),
     per_emp AS (
       SELECT
         p.employee_id,
-        COUNT(*) AS cnt,
+        COUNT(*)         AS cnt,
         AVG(p.first_sec) AS avg_first_response_sec,
         AVG(p.close_sec) AS avg_resolution_sec
       FROM per_thread p
@@ -152,8 +183,8 @@ def _close_time_query_sql() -> str:
       WHERE o.origin_ts >= :to - INTERVAL '7 day' AND o.origin_ts < :to
     )
     SELECT
-      emp.employee_id,
-      emp.full_name AS employee_name,
+      emp.{EMPLOYEE_ID_COL}      AS employee_id,
+      emp.{EMPLOYEE_FULLNAME_COL} AS employee_name,
       per_emp.cnt,
       per_emp.avg_first_response_sec,
       per_emp.avg_resolution_sec,
@@ -162,14 +193,14 @@ def _close_time_query_sql() -> str:
         ELSE ROUND( (team.team_avg_close_sec_7d - per_emp.avg_resolution_sec) * 100.0 / team.team_avg_close_sec_7d, 2)
       END AS trend_pct
     FROM per_emp
-    JOIN employees emp ON emp.employee_id = per_emp.employee_id
+    JOIN {EMPLOYEES_TABLE} emp ON emp.{EMPLOYEE_ID_COL} = per_emp.employee_id
     LEFT JOIN team_7d team ON TRUE
-    WHERE emp.department = :dept_name
-    ORDER BY {{ORDER_CLAUSE}}
+    WHERE emp.{EMPLOYEE_DEPT_COL} = :dept_name
+    ORDER BY {order_clause}
     LIMIT :limit
     ;
-    """.replace("{ORDER_CLAUSE}", "{ORDER_CLAUSE}")  # placeholder
-    # Not: ORDER_CLAUSE sonradan güvenli whitelist ile dolduruluyor.
+    """
+
 
 # ------------------------------
 # Endpoint
@@ -179,10 +210,14 @@ def finance_close_time_report(
     frm: Optional[str] = Query(None, description="YYYY-MM-DD"),
     to: Optional[str] = Query(None, description="YYYY-MM-DD (exclusive)"),
     order: Literal[
-        "cnt_desc", "cnt_asc",
-        "first_asc", "first_desc",
-        "res_asc", "res_desc",
-        "name_asc", "name_desc",
+        "cnt_desc",
+        "cnt_asc",
+        "first_asc",
+        "first_desc",
+        "res_asc",
+        "res_desc",
+        "name_asc",
+        "name_desc",
     ] = "cnt_desc",
     limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -192,9 +227,11 @@ def finance_close_time_report(
     """
     today = datetime.utcnow().date()
     _frm = _parse_date(frm, default=datetime.combine(today - timedelta(days=6), datetime.min.time()))
-    _to  = _parse_date(to,  default=datetime.combine(today + timedelta(days=1), datetime.min.time()))
+    _to = _parse_date(to, default=datetime.combine(today + timedelta(days=1), datetime.min.time()))
 
-    sql = _close_time_query_sql().replace("{ORDER_CLAUSE}", _order_sql(order))
+    # Dinamik thread kolonu tespiti
+    thread_col = _detect_thread_key_col(db)
+    sql = _close_time_query_sql(thread_col=thread_col, order_clause=_order_sql(order))
 
     params = {
         "channel": "finans",
@@ -209,10 +246,12 @@ def finance_close_time_report(
     try:
         rows = db.execute(text(sql), params).mappings().all()
     except Exception as exc:
-        # Neden: En çok görülen uyumsuzluk thread_key kolon adı.
         raise HTTPException(
             status_code=500,
-            detail=f"Finance close-time query failed. Check column names (THREAD_KEY_COL='{THREAD_KEY_COL}') and events schema. Error: {exc}"
+            detail=(
+                "Finance close-time query failed. "
+                f"Detected thread column: '{thread_col}'. Error: {exc}"
+            ),
         )
 
     out_rows: List[FinanceCloseRow] = []
@@ -229,9 +268,4 @@ def finance_close_time_report(
             )
         )
 
-    return FinanceCloseReport(
-        range_from=_frm,
-        range_to=_to,
-        total_records=len(out_rows),
-        rows=out_rows,
-    )
+    return FinanceCloseReport(range_from=_frm, range_to=_to, total_records=len(out_rows), rows=out_rows)
