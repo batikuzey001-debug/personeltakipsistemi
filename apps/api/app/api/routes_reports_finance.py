@@ -13,7 +13,7 @@ from app.db.session import get_db
 
 router = APIRouter(prefix="/reports/finance", tags=["reports:finance"])
 
-# ==== ŞEMA SABİTLERİ (diğer kolonlar sabit, thread kolonu dinamik tespit edilecek) ====
+# ---- ŞEMA SABİTLERİ ----
 TS_COL = "ts"
 TYPE_COL = "type"
 CHANNEL_COL = "channel"
@@ -23,17 +23,26 @@ EMPLOYEE_DEPT_COL = "department"
 EMPLOYEES_TABLE = "employees"
 EVENTS_TABLE = "events"
 
-# Olası thread key kolon adayları (sırayla denenecek)
-THREAD_KEY_CANDIDATES = ("origin_msg_id", "root_message_id", "thread_key")
+# Olası thread-key kolon adayları (sırayla denenir; gerekirse artırdım)
+THREAD_KEY_CANDIDATES = (
+    "origin_msg_id",
+    "root_message_id",
+    "thread_key",
+    "origin_id",
+    "root_msg_id",
+    "root_id",
+    "parent_msg_id",
+    "reply_to_msg_id",
+    "reply_to",
+    "correlation_id",
+)
 
 FIRST_REPLY_TYPES = ("reply_first",)
 CLOSE_TYPES = ("approve", "reply_close", "reject")
 DEPT_NAME = "Finans"
 
 
-# ------------------------------
-# Output Schemas
-# ------------------------------
+# ---- MODELLER ----
 class FinanceCloseRow(BaseModel):
     employee_id: str = Field(..., description="RD-xxx")
     employee_name: str
@@ -51,9 +60,7 @@ class FinanceCloseReport(BaseModel):
     rows: List[FinanceCloseRow]
 
 
-# ------------------------------
-# Helpers
-# ------------------------------
+# ---- HELPERS ----
 def _parse_date(val: Optional[str], default: datetime) -> datetime:
     try:
         return datetime.fromisoformat(val) if val else default
@@ -76,12 +83,8 @@ def _order_sql(order: str) -> str:
 
 
 def _detect_thread_key_col(db: Session) -> str:
-    """
-    information_schema üzerinden events tablosunda mevcut kolonları kontrol eder
-    ve THREAD_KEY_CANDIDATES içinden ilk bulunanı döner.
-    """
     sql = text(
-        f"""
+        """
         SELECT column_name
         FROM information_schema.columns
         WHERE table_name = :tbl AND column_name = ANY(:cands)
@@ -89,26 +92,21 @@ def _detect_thread_key_col(db: Session) -> str:
         """
     )
     res = db.execute(
-        sql,
-        {"tbl": EVENTS_TABLE, "cands": list(THREAD_KEY_CANDIDATES)},
+        sql, {"tbl": EVENTS_TABLE, "cands": list(THREAD_KEY_CANDIDATES)}
     ).scalars().first()
     if not res:
-        # Kullanıcı hızlıca düzenleyebilsin diye anlaşılır hata verelim
         raise HTTPException(
             status_code=500,
             detail=(
                 "Finance close-time query failed: could not detect thread key column. "
                 f"Tried: {', '.join(THREAD_KEY_CANDIDATES)} in table '{EVENTS_TABLE}'. "
-                "Lütfen events tablosundaki kök mesaj anahtarı kolonu adını bu dosyada sabit olarak belirtin."
+                "İstersen bu endpoint'e ?thread_col=<kolon_adı> parametresi vererek test edebilirsin."
             ),
         )
     return res
 
 
 def _close_time_query_sql(thread_col: str, order_clause: str) -> str:
-    """
-    Bonus/Finans için ortak SQL. thread_col dinamik gelir.
-    """
     return f"""
     WITH
     origin AS (
@@ -183,7 +181,7 @@ def _close_time_query_sql(thread_col: str, order_clause: str) -> str:
       WHERE o.origin_ts >= :to - INTERVAL '7 day' AND o.origin_ts < :to
     )
     SELECT
-      emp.{EMPLOYEE_ID_COL}      AS employee_id,
+      emp.{EMPLOYEE_ID_COL}       AS employee_id,
       emp.{EMPLOYEE_FULLNAME_COL} AS employee_name,
       per_emp.cnt,
       per_emp.avg_first_response_sec,
@@ -202,9 +200,7 @@ def _close_time_query_sql(thread_col: str, order_clause: str) -> str:
     """
 
 
-# ------------------------------
-# Endpoint
-# ------------------------------
+# ---- ENDPOINT ----
 @router.get("/close-time", response_model=FinanceCloseReport)
 def finance_close_time_report(
     frm: Optional[str] = Query(None, description="YYYY-MM-DD"),
@@ -220,6 +216,7 @@ def finance_close_time_report(
         "name_desc",
     ] = "cnt_desc",
     limit: int = Query(200, ge=1, le=500),
+    thread_col: Optional[str] = Query(None, description="Events tablosundaki kök mesaj anahtarı kolonu (örn: origin_msg_id)"),
     db: Session = Depends(get_db),
 ):
     """
@@ -229,10 +226,11 @@ def finance_close_time_report(
     _frm = _parse_date(frm, default=datetime.combine(today - timedelta(days=6), datetime.min.time()))
     _to = _parse_date(to, default=datetime.combine(today + timedelta(days=1), datetime.min.time()))
 
-    # Dinamik thread kolonu tespiti
-    thread_col = _detect_thread_key_col(db)
-    sql = _close_time_query_sql(thread_col=thread_col, order_clause=_order_sql(order))
+    # 1) Dışarıdan verilmişse onu kullan
+    # 2) Verilmediyse otomatik tespit etmeye çalış
+    thread = thread_col or _detect_thread_key_col(db)
 
+    sql = _close_time_query_sql(thread_col=thread, order_clause=_order_sql(order))
     params = {
         "channel": "finans",
         "first_types": FIRST_REPLY_TYPES,
@@ -248,24 +246,20 @@ def finance_close_time_report(
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Finance close-time query failed. "
-                f"Detected thread column: '{thread_col}'. Error: {exc}"
-            ),
+            detail=f"Finance close-time query failed. Using thread_col='{thread}'. Error: {exc}",
         )
 
-    out_rows: List[FinanceCloseRow] = []
-    for r in rows:
-        out_rows.append(
-            FinanceCloseRow(
-                employee_id=r["employee_id"],
-                employee_name=r["employee_name"],
-                count=int(r["cnt"]),
-                avg_first_response_sec=float(r["avg_first_response_sec"]) if r["avg_first_response_sec"] is not None else None,
-                avg_resolution_sec=float(r["avg_resolution_sec"]) if r["avg_resolution_sec"] is not None else None,
-                trend_pct=float(r["trend_pct"]) if r["trend_pct"] is not None else None,
-                profile_url=f"/employees/{r['employee_id']}",
-            )
+    out_rows: List[FinanceCloseRow] = [
+        FinanceCloseRow(
+            employee_id=r["employee_id"],
+            employee_name=r["employee_name"],
+            count=int(r["cnt"]),
+            avg_first_response_sec=float(r["avg_first_response_sec"]) if r["avg_first_response_sec"] is not None else None,
+            avg_resolution_sec=float(r["avg_resolution_sec"]) if r["avg_resolution_sec"] is not None else None,
+            trend_pct=float(r["trend_pct"]) if r["trend_pct"] is not None else None,
+            profile_url=f"/employees/{r['employee_id']}",
         )
+        for r in rows
+    ]
 
     return FinanceCloseReport(range_from=_frm, range_to=_to, total_records=len(out_rows), rows=out_rows)
