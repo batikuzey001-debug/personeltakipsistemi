@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -13,140 +12,97 @@ from app.db.session import get_db
 
 router = APIRouter(prefix="/reports/finance", tags=["reports:finance"])
 
-# ---- ŞEMA SABİTLERİ ----
+# ---- ŞEMA/Tablo adları ----
+EVENTS_TABLE = "events"
+EMPLOYEES_TABLE = "employees"
+
+# Kolon adları (DB'de bunlar mevcut olmalı)
 TS_COL = "ts"
 TYPE_COL = "type"
 EMPLOYEE_ID_COL = "employee_id"
 EMPLOYEE_FULLNAME_COL = "full_name"
 EMPLOYEE_DEPT_COL = "department"
-EMPLOYEES_TABLE = "employees"
-EVENTS_TABLE = "events"
 
-# Webhook çıktısına göre thread key kolon adaylarında 'corr' ilk sırada.
-THREAD_KEY_CANDIDATES = (
-    "corr",
-    "origin_msg_id",
-    "root_message_id",
-    "thread_key",
-    "origin_id",
-    "root_msg_id",
-    "root_id",
-    "parent_msg_id",
-    "reply_to_msg_id",
-    "reply_to",
-    "correlation_id",
-)
-
-# Bazı şemalarda 'channel' yerine farklı isimler kullanılabiliyor.
-CHANNEL_COL_CANDIDATES = (
-    "channel",
-    "event_channel",
-    "chan",
-    "category",
-    "label",
-    "tag",
-)
+# Webhook JSON’una göre thread anahtarı 'corr' (DB’de de aynı isimde tutuluyor varsayıyoruz)
+THREAD_COL = "corr"
 
 FIRST_REPLY_TYPES = ("reply_first",)
 CLOSE_TYPES = ("approve", "reply_close", "reject")
 DEPT_NAME = "Finans"  # employees.department filtresi
 
+# ---- Panelin beklediği şema (Bonus ile birebir) ----
+class Trend(TypedDict):
+    emoji: str
+    pct: float | None
+    team_avg_close_sec: float | None
 
-# ---- MODELLER ----
-class FinanceCloseRow(BaseModel):
-    employee_id: str = Field(..., description="RD-xxx")
-    employee_name: str
-    count: int
-    avg_first_response_sec: Optional[float] = None
-    avg_resolution_sec: Optional[float] = None
-    trend_pct: Optional[float] = None
-    profile_url: Optional[str] = None
-
-
-class FinanceCloseReport(BaseModel):
-    range_from: datetime
-    range_to: datetime
-    total_records: int
-    rows: List[FinanceCloseRow]
+class Row(TypedDict):
+    employee_id: str
+    full_name: str
+    department: str
+    count_total: int
+    avg_first_sec: float | None
+    avg_close_sec: float
+    trend: Trend
 
 
-# ---- HELPERS ----
-def _parse_date(val: Optional[str], default: datetime) -> datetime:
+def _parse_date(val: Optional[str], default_dt: datetime) -> datetime:
+    if not val:
+        return default_dt
     try:
-        return datetime.fromisoformat(val) if val else default
-    except ValueError:
+        # YYYY-MM-DD
+        return datetime.fromisoformat(val)
+    except Exception:
         raise HTTPException(status_code=422, detail=f"Invalid date: {val}")
 
 
 def _order_sql(order: str) -> str:
-    allowed = {
-        "cnt_desc": "cnt DESC, avg_resolution_sec ASC",
-        "cnt_asc": "cnt ASC, avg_resolution_sec ASC",
-        "first_asc": "avg_first_response_sec ASC NULLS LAST",
-        "first_desc": "avg_first_response_sec DESC NULLS LAST",
-        "res_asc": "avg_resolution_sec ASC NULLS LAST",
-        "res_desc": "avg_resolution_sec DESC NULLS LAST",
-        "name_asc": "employee_name ASC",
-        "name_desc": "employee_name DESC",
+    # Bonus tarafındaki seçeneklere paralel basit sıralama
+    mapping = {
+        "avg_asc": "avg_close_sec ASC, count_total DESC",
+        "avg_desc": "avg_close_sec DESC, count_total DESC",
+        "cnt_desc": "count_total DESC, avg_close_sec ASC",
     }
-    return allowed.get(order, allowed["cnt_desc"])
+    return mapping.get(order, mapping["avg_asc"])
 
 
-def _detect_col(db: Session, table: str, candidates: tuple[str, ...], what: str) -> str:
-    sql = text(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_name = :tbl AND column_name = ANY(:cands)
-        ORDER BY array_position(:cands, column_name)
-        """
-    )
-    found = db.execute(sql, {"tbl": table, "cands": list(candidates)}).scalars().first()
-    if not found:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Could not detect {what} column in '{table}'. "
-                f"Tried: {', '.join(candidates)}. "
-                f"Lütfen endpoint'e ?{what}=_kolon_adi parametresi verin."
-            ),
-        )
-    return found
-
-
-def _close_time_query_sql(thread_col: str, channel_col: str, order_clause: str) -> str:
+def _sql_finance_without_channel(order_clause: str) -> str:
     """
-    DİKKAT: events tablosunda her kullanım 'e.{thread_col}' ve 'e.{channel_col}' ile yapılır.
-    Literal 'e.thread_key' veya 'e.channel' KALMAMALI; 'thread_key' sadece alias olarak kullanılır.
+    Kanal sütunu bilinmediği için yalnızca departman bazlı filtre ile hesaplıyoruz.
+    Mantık:
+      - origin: her iş parçasının kökü (THREAD_COL ile gruplanır)
+      - first_reply: ilk yanıt ts
+      - first_close: ilk kapanış ts (approve/reply_close/reject)
+      - per_thread: süreler
+      - per_emp: kişi bazında agregasyon
+      - team_7d: seçili aralığın bitişine göre son 7 gün ekip ortalaması (çözüm süresi)
+    Not: employees.department = 'Finans' filtresi uygulanır.
     """
     return f"""
     WITH
     origin AS (
       SELECT
         e.{EMPLOYEE_ID_COL} AS employee_id,
-        e.{thread_col}      AS thread_key,
+        e.{THREAD_COL}      AS thread_key,
         MIN(e.{TS_COL})     AS origin_ts
       FROM {EVENTS_TABLE} e
-      WHERE e.{channel_col} = :channel
-        AND e.{TYPE_COL} = 'origin'
+      WHERE e.{TYPE_COL} = 'origin'
       GROUP BY 1,2
     ),
     first_reply AS (
       SELECT
-        e.{thread_col}  AS thread_key,
+        e.{THREAD_COL}  AS thread_key,
         MIN(e.{TS_COL}) AS first_ts
       FROM {EVENTS_TABLE} e
-      WHERE e.{channel_col} = :channel
-        AND e.{TYPE_COL} IN :first_types
+      WHERE e.{TYPE_COL} IN :first_types
       GROUP BY 1
     ),
     first_close AS (
       SELECT
-        e.{thread_col}  AS thread_key,
+        e.{THREAD_COL}  AS thread_key,
         MIN(e.{TS_COL}) AS close_ts
       FROM {EVENTS_TABLE} e
-      WHERE e.{channel_col} = :channel
-        AND e.{TYPE_COL} IN :close_types
+      WHERE e.{TYPE_COL} IN :close_types
       GROUP BY 1
     ),
     joined AS (
@@ -179,29 +135,27 @@ def _close_time_query_sql(thread_col: str, channel_col: str, order_clause: str) 
     per_emp AS (
       SELECT
         p.employee_id,
-        COUNT(*)         AS cnt,
-        AVG(p.first_sec) AS avg_first_response_sec,
-        AVG(p.close_sec) AS avg_resolution_sec
+        COUNT(*)         AS count_total,
+        AVG(p.first_sec) AS avg_first_sec,
+        AVG(p.close_sec) AS avg_close_sec
       FROM per_thread p
       GROUP BY 1
     ),
     team_7d AS (
       SELECT
-        AVG(EXTRACT(EPOCH FROM (fc.close_ts - o.origin_ts))) AS team_avg_close_sec_7d
+        AVG(EXTRACT(EPOCH FROM (fc.close_ts - o.origin_ts))) AS team_avg_close_sec
       FROM origin o
       JOIN first_close fc ON fc.thread_key = o.thread_key
       WHERE o.origin_ts >= :to - INTERVAL '7 day' AND o.origin_ts < :to
     )
     SELECT
       emp.{EMPLOYEE_ID_COL}       AS employee_id,
-      emp.{EMPLOYEE_FULLNAME_COL} AS employee_name,
-      per_emp.cnt,
-      per_emp.avg_first_response_sec,
-      per_emp.avg_resolution_sec,
-      CASE
-        WHEN team.team_avg_close_sec_7d IS NULL OR per_emp.avg_resolution_sec IS NULL THEN NULL
-        ELSE ROUND( (team.team_avg_close_sec_7d - per_emp.avg_resolution_sec) * 100.0 / team.team_avg_close_sec_7d, 2)
-      END AS trend_pct
+      emp.{EMPLOYEE_FULLNAME_COL} AS full_name,
+      emp.{EMPLOYEE_DEPT_COL}     AS department,
+      per_emp.count_total,
+      per_emp.avg_first_sec,
+      per_emp.avg_close_sec,
+      team.team_avg_close_sec
     FROM per_emp
     JOIN {EMPLOYEES_TABLE} emp ON emp.{EMPLOYEE_ID_COL} = per_emp.employee_id
     LEFT JOIN team_7d team ON TRUE
@@ -212,41 +166,30 @@ def _close_time_query_sql(thread_col: str, channel_col: str, order_clause: str) 
     """
 
 
-# ---- ENDPOINT ----
-@router.get("/close-time", response_model=FinanceCloseReport)
-def finance_close_time_report(
+def _trend_emoji(pct: Optional[float]) -> str:
+    if pct is None:
+        return "•"
+    return "🟢" if pct >= 0 else "🔴"
+
+
+@router.get("/close-time", response_model=list[Row])
+def finance_close_time(
     frm: Optional[str] = Query(None, description="YYYY-MM-DD"),
     to: Optional[str] = Query(None, description="YYYY-MM-DD (exclusive)"),
-    order: Literal[
-        "cnt_desc",
-        "cnt_asc",
-        "first_asc",
-        "first_desc",
-        "res_asc",
-        "res_desc",
-        "name_asc",
-        "name_desc",
-    ] = "cnt_desc",
+    order: Literal["avg_asc", "avg_desc", "cnt_desc"] = "avg_asc",
     limit: int = Query(200, ge=1, le=500),
-    # Debug / esneklik için parametreler:
-    thread_col: Optional[str] = Query(None, description="Events tablosunda thread anahtarı kolonu (örn: corr)"),
-    channel_col: Optional[str] = Query(None, description="Events tablosunda kanal kolonu (örn: event_channel)"),
     db: Session = Depends(get_db),
 ):
     """
-    Finans kanalındaki kapanış bazlı performans raporu.
+    Finance (departman=Finans) kapanış performansı — Bonus şemasına birebir uyumlu Row[] döner.
+    Not: Kanal sütunu adı bilinmediği için, yalnızca departman filtresi uygulanır.
     """
     today = datetime.utcnow().date()
-    _frm = _parse_date(frm, default=datetime.combine(today - timedelta(days=6), datetime.min.time()))
-    _to = _parse_date(to, default=datetime.combine(today + timedelta(days=1), datetime.min.time()))
+    _frm = _parse_date(frm, default_dt=datetime.combine(today - timedelta(days=6), datetime.min.time()))
+    _to = _parse_date(to, default_dt=datetime.combine(today + timedelta(days=1), datetime.min.time()))
 
-    # Kolon adlarını belirle:
-    thread = thread_col or _detect_col(db, EVENTS_TABLE, THREAD_KEY_CANDIDATES, "thread_col")
-    channel_c = channel_col or _detect_col(db, EVENTS_TABLE, CHANNEL_COL_CANDIDATES, "channel_col")
-
-    sql = _close_time_query_sql(thread_col=thread, channel_col=channel_c, order_clause=_order_sql(order))
+    sql = _sql_finance_without_channel(order_clause=_order_sql(order))
     params = {
-        "channel": "finans",
         "first_types": FIRST_REPLY_TYPES,
         "close_types": CLOSE_TYPES,
         "frm": _frm,
@@ -258,30 +201,30 @@ def finance_close_time_report(
     try:
         rows = db.execute(text(sql), params).mappings().all()
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Finance close-time query failed. "
-                f"Using thread_col='{thread}', channel_col='{channel_c}'. Error: {exc}"
-            ),
+        raise HTTPException(status_code=500, detail=f"Finance close-time query failed (department-only). Error: {exc}")
+
+    out: List[Row] = []
+    # team_avg_close_sec tüm satırlar için aynı (CTE'den tek satır gelir)
+    team_avg = rows[0]["team_avg_close_sec"] if rows else None
+
+    for r in rows:
+        avg_close = float(r["avg_close_sec"]) if r["avg_close_sec"] is not None else None
+        # Trend: ekibin son 7g ortalamasına göre (pozitif = daha hızlı)
+        if team_avg and avg_close:
+            pct = round((team_avg - avg_close) * 100.0 / team_avg, 2)
+        else:
+            pct = None
+
+        out.append(
+            Row(
+                employee_id=r["employee_id"],
+                full_name=r["full_name"],
+                department=r["department"],
+                count_total=int(r["count_total"]),
+                avg_first_sec=float(r["avg_first_sec"]) if r["avg_first_sec"] is not None else None,
+                avg_close_sec=float(avg_close) if avg_close is not None else 0.0,
+                trend=Trend(emoji=_trend_emoji(pct), pct=pct, team_avg_close_sec=float(team_avg) if team_avg else None),
+            )
         )
 
-    out_rows: List[FinanceCloseRow] = [
-        FinanceCloseRow(
-            employee_id=r["employee_id"],
-            employee_name=r["employee_name"],
-            count=int(r["cnt"]),
-            avg_first_response_sec=float(r["avg_first_response_sec"]) if r["avg_first_response_sec"] is not None else None,
-            avg_resolution_sec=float(r["avg_resolution_sec"]) if r["avg_resolution_sec"] is not None else None,
-            trend_pct=float(r["trend_pct"]) if r["trend_pct"] is not None else None,
-            profile_url=f"/employees/{r['employee_id']}",
-        )
-        for r in rows
-    ]
-
-    return FinanceCloseReport(
-        range_from=_frm,
-        range_to=_to,
-        total_records=len(out_rows),
-        rows=out_rows,
-    )
+    return out
