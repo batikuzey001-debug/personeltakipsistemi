@@ -23,8 +23,10 @@ EMPLOYEE_DEPT_COL = "department"
 EMPLOYEES_TABLE = "employees"
 EVENTS_TABLE = "events"
 
-# Olası thread-key kolon adayları (sırayla denenir; gerekirse artırdım)
+# Webhook çıktısına göre thread key kolonumuz "corr".
+# Yine de esneklik için diğer olası adları da ekliyoruz (varsa otomatik tespit eder).
 THREAD_KEY_CANDIDATES = (
+    "corr",              # ← ÖNCE "corr" (webhook JSON'unda gördüğümüz alan)
     "origin_msg_id",
     "root_message_id",
     "thread_key",
@@ -83,6 +85,10 @@ def _order_sql(order: str) -> str:
 
 
 def _detect_thread_key_col(db: Session) -> str:
+    """
+    events tablosunda mevcut olan ilk uygun thread kolonu döner.
+    Adaylar THREAD_KEY_CANDIDATES sırasına göre kontrol edilir (öncelik: 'corr').
+    """
     sql = text(
         """
         SELECT column_name
@@ -98,15 +104,19 @@ def _detect_thread_key_col(db: Session) -> str:
         raise HTTPException(
             status_code=500,
             detail=(
-                "Finance close-time query failed: could not detect thread key column. "
+                "Finance close-time query failed: could not detect a thread key column. "
                 f"Tried: {', '.join(THREAD_KEY_CANDIDATES)} in table '{EVENTS_TABLE}'. "
-                "İstersen bu endpoint'e ?thread_col=<kolon_adı> parametresi vererek test edebilirsin."
+                "Lütfen events tablosundaki kök mesaj anahtarının adını endpointte ?thread_col=... ile geçin."
             ),
         )
     return res
 
 
 def _close_time_query_sql(thread_col: str, order_clause: str) -> str:
+    """
+    DİKKAT: events tablosunda her kullanım 'e.{thread_col}' şeklinde.
+    Hiçbir yerde 'e.thread_key' literal KALMAMALI; thread_key sadece alias olarak kullanılır.
+    """
     return f"""
     WITH
     origin AS (
@@ -216,7 +226,10 @@ def finance_close_time_report(
         "name_desc",
     ] = "cnt_desc",
     limit: int = Query(200, ge=1, le=500),
-    thread_col: Optional[str] = Query(None, description="Events tablosundaki kök mesaj anahtarı kolonu (örn: origin_msg_id)"),
+    thread_col: Optional[str] = Query(
+        None,
+        description="Events.tablosundaki kök mesaj anahtarı kolonu (örn: corr). Varsayılan otomatik tespit; öncelik 'corr'.",
+    ),
     db: Session = Depends(get_db),
 ):
     """
@@ -226,8 +239,7 @@ def finance_close_time_report(
     _frm = _parse_date(frm, default=datetime.combine(today - timedelta(days=6), datetime.min.time()))
     _to = _parse_date(to, default=datetime.combine(today + timedelta(days=1), datetime.min.time()))
 
-    # 1) Dışarıdan verilmişse onu kullan
-    # 2) Verilmediyse otomatik tespit etmeye çalış
+    # 1) Dışarıdan verilmişse onu kullan; 2) verilmediyse otomatik tespit (öncelik: 'corr').
     thread = thread_col or _detect_thread_key_col(db)
 
     sql = _close_time_query_sql(thread_col=thread, order_clause=_order_sql(order))
@@ -262,4 +274,9 @@ def finance_close_time_report(
         for r in rows
     ]
 
-    return FinanceCloseReport(range_from=_frm, range_to=_to, total_records=len(out_rows), rows=out_rows)
+    return FinanceCloseReport(
+        range_from=_frm,
+        range_to=_to,
+        total_records=len(out_rows),
+        rows=out_rows,
+    )
