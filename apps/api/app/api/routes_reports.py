@@ -1,7 +1,6 @@
 # apps/api/app/api/routes_reports.py
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
 from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Literal, Dict, List, Tuple, Set
@@ -32,9 +31,7 @@ def _sign_emoji(pct: float | None) -> str:
     return "⚪"  # ±3%
 
 def _root_origin_ts(chat_id: int, start_msg_id: int, db: Session, cache: Dict[Tuple[int,int], datetime | None]) -> datetime | None:
-    """
-    Neden: Trend ve süreler kök origin'e göre hesaplanır.
-    """
+    """Reply zincirini yukarı takip edip kök origin ts döndürür."""
     current_id = start_msg_id
     visited = set()
     while True:
@@ -79,26 +76,24 @@ def bonus_close_time(
     frm: str | None = Query(None, description="YYYY-MM-DD (default: son 7 gün)"),
     to: str | None = Query(None, description="YYYY-MM-DD (exclusive, default: bugün+1)"),
     order: Literal["avg_asc","avg_desc","cnt_desc"] = Query("avg_asc"),
-    limit: int = Query(500, ge=1, le=500),  # ← default 500, max 500 (önceki davranışla uyum)
+    limit: int = Query(500, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
     """
-    BONUS departmanı için (employees.department='Bonus') kişi bazlı rapor.
-    - İşlem Sayısı = close tipleri adedi (reply_close/approve/reject)
-    - Ø İlk Yanıt (sn) = kişinin reply_first.ts − kök origin.ts
-    - Ø Sonuçlandırma (sn) = kişinin close.ts − kök origin.ts
-    - Trend = kişinin Ø Sonuçlandırma (seçilen aralık) vs **EKİP Ø Son 7 Gün**
+    BONUS departmanı için kişi bazlı rapor.
+    İşlem = close tipleri (reply_close/approve/reject)
+    Ø İlk Yanıt = reply_first.ts − kök origin.ts
+    Ø Sonuçlandırma = close.ts − kök origin.ts
+    Trend = kişinin Ø sonuçlandırması vs ekip Ø (son 7 gün)
     """
-    # Seçilen aralık (kişisel metrikler)
     dt_to = _parse_date(to) or (datetime.now(timezone.utc) + timedelta(days=1))
     dt_from = _parse_date(frm) or (dt_to - timedelta(days=7))
 
-    # Trend için baz aralık (her zaman SON 7 GÜN)
     trend_to = datetime.now(timezone.utc) + timedelta(days=1)
     trend_from = trend_to - timedelta(days=7)
 
-    # Bonus departmanındaki personeller
+    # Bonus çalışanları
     bonus_emp_rows = db.query(Employee.employee_id, Employee.full_name, Employee.department)\
                        .filter(Employee.department == "Bonus").all()
     bonus_emp_ids = {r[0] for r in bonus_emp_rows}
@@ -108,7 +103,6 @@ def bonus_close_time(
 
     close_types = ("reply_close", "approve", "reject")
 
-    # first ve close eventleri (seçili aralık)
     first_rows: List[Event] = (
         db.query(Event)
         .filter(
@@ -116,11 +110,8 @@ def bonus_close_time(
             Event.type == "reply_first",
             Event.employee_id.isnot(None),
             Event.employee_id.in_(bonus_emp_ids),
-            Event.ts >= dt_from,
-            Event.ts < dt_to,
-        )
-        .order_by(Event.ts.asc())
-        .all()
+            Event.ts >= dt_from, Event.ts < dt_to,
+        ).order_by(Event.ts.asc()).all()
     )
     close_rows: List[Event] = (
         db.query(Event)
@@ -129,11 +120,8 @@ def bonus_close_time(
             Event.type.in_(close_types),
             Event.employee_id.isnot(None),
             Event.employee_id.in_(bonus_emp_ids),
-            Event.ts >= dt_from,
-            Event.ts < dt_to,
-        )
-        .order_by(Event.ts.asc())
-        .all()
+            Event.ts >= dt_from, Event.ts < dt_to,
+        ).order_by(Event.ts.asc()).all()
     )
     if not first_rows and not close_rows:
         return []
@@ -142,30 +130,23 @@ def bonus_close_time(
     per_emp_first_secs: Dict[str, List[float]] = {}
     per_emp_close_secs: Dict[str, List[float]] = {}
 
-    # Ø İlk Yanıt
     for e in first_rows:
-        root_ts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
-        if not root_ts:
-            continue
-        sec = (e.ts - root_ts).total_seconds()
-        if sec < 0:
-            continue
-        per_emp_first_secs.setdefault(e.employee_id, []).append(sec)
+        rts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
+        if not rts: continue
+        sec = (e.ts - rts).total_seconds()
+        if sec >= 0:
+            per_emp_first_secs.setdefault(e.employee_id, []).append(sec)
 
-    # Ø Sonuçlandırma
     for e in close_rows:
-        root_ts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
-        if not root_ts:
-            continue
-        sec = (e.ts - root_ts).total_seconds()
-        if sec < 0:
-            continue
-        per_emp_close_secs.setdefault(e.employee_id, []).append(sec)
+        rts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
+        if not rts: continue
+        sec = (e.ts - rts).total_seconds()
+        if sec >= 0:
+            per_emp_close_secs.setdefault(e.employee_id, []).append(sec)
 
     if not per_emp_close_secs:
         return []
 
-    # ------- Ekip Ø SON 7 GÜN (trend için sabit baz) -------
     team_close_trend_rows: List[Event] = (
         db.query(Event)
         .filter(
@@ -173,24 +154,19 @@ def bonus_close_time(
             Event.type.in_(close_types),
             Event.employee_id.isnot(None),
             Event.employee_id.in_(bonus_emp_ids),
-            Event.ts >= trend_from,
-            Event.ts < trend_to,
-        )
-        .all()
+            Event.ts >= trend_from, Event.ts < trend_to,
+        ).all()
     )
     team_root_cache: Dict[Tuple[int,int], datetime | None] = {}
     team_secs: List[float] = []
     for e in team_close_trend_rows:
         rts = _root_origin_ts(e.chat_id, e.msg_id, db, team_root_cache)
-        if not rts:
-            continue
+        if not rts: continue
         sec = (e.ts - rts).total_seconds()
         if sec >= 0:
             team_secs.append(sec)
     team_avg_close_sec = mean(team_secs) if team_secs else None
-    # -------------------------------------------------------
 
-    # satırlar
     rows = []
     for emp_id, close_secs in per_emp_close_secs.items():
         full_name, dept = emp_info.get(emp_id, (emp_id, "Bonus"))
@@ -215,16 +191,14 @@ def bonus_close_time(
             }
         })
 
-    # sıralama
     if order == "avg_desc":
         rows.sort(key=lambda r: (r["avg_close_sec"],), reverse=True)
     elif order == "cnt_desc":
         rows.sort(key=lambda r: (r["count_total"], r["avg_close_sec"]), reverse=True)
-    else:  # avg_asc default
+    else:
         rows.sort(key=lambda r: (r["avg_close_sec"], -r["count_total"]))
 
     return rows[offset: offset + limit]
-
 
 # ---------- FINANS: kişi bazlı kapanış ve ilk yanıt raporu (sn) ----------
 @router.get(
@@ -235,21 +209,19 @@ def finance_close_time(
     frm: str | None = Query(None, description="YYYY-MM-DD (default: son 7 gün)"),
     to: str | None = Query(None, description="YYYY-MM-DD (exclusive, default: bugün+1)"),
     order: Literal["avg_asc","avg_desc","cnt_desc"] = Query("avg_asc"),
-    limit: int = Query(500, ge=1, le=500),  # ← default 500, max 500 (Bonus ile aynı)
+    limit: int = Query(500, ge=1, le=500),  # Bonus ile aynı sınırlar
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
     """
-    FINANS departmanı için kişi bazlı rapor (Bonus mantığı ile).
+    FINANS kanalı için kişi bazlı rapor (Bonus mantığıyla).
     - Kanal: Event.source_channel == 'finans'
     - Kişi: employee_id IS NOT NULL
-    - Dönen şema: Bonus ile birebir (Row[])
+    - Şema: Bonus ile birebir (Row[])
     """
-    # Seçilen aralık
     dt_to = _parse_date(to) or (datetime.now(timezone.utc) + timedelta(days=1))
     dt_from = _parse_date(frm) or (dt_to - timedelta(days=7))
 
-    # Trend için sabit baz (son 7 gün)
     trend_to = datetime.now(timezone.utc) + timedelta(days=1)
     trend_from = trend_to - timedelta(days=7)
 
@@ -259,18 +231,14 @@ def finance_close_time(
     all_emp_rows = db.query(Employee.employee_id, Employee.full_name, Employee.department).all()
     emp_info: Dict[str, Tuple[str, str]] = {r[0]: (r[1] or r[0], r[2] or "-") for r in all_emp_rows}
 
-    # first ve close eventleri (SEÇİLEN ARALIK + KANAL=finans + employee_id dolu)
     first_rows: List[Event] = (
         db.query(Event)
         .filter(
             Event.source_channel == "finans",
             Event.type == "reply_first",
             Event.employee_id.isnot(None),
-            Event.ts >= dt_from,
-            Event.ts < dt_to,
-        )
-        .order_by(Event.ts.asc())
-        .all()
+            Event.ts >= dt_from, Event.ts < dt_to,
+        ).order_by(Event.ts.asc()).all()
     )
     close_rows: List[Event] = (
         db.query(Event)
@@ -278,70 +246,52 @@ def finance_close_time(
             Event.source_channel == "finans",
             Event.type.in_(close_types),
             Event.employee_id.isnot(None),
-            Event.ts >= dt_from,
-            Event.ts < dt_to,
-        )
-        .order_by(Event.ts.asc())
-        .all()
+            Event.ts >= dt_from, Event.ts < dt_to,
+        ).order_by(Event.ts.asc()).all()
     )
     if not first_rows and not close_rows:
         return []
 
-    # kök origin ts cache
     root_cache: Dict[Tuple[int,int], datetime | None] = {}
-
-    # kişi bazında süreler (sn)
     per_emp_first_secs: Dict[str, List[float]] = {}
     per_emp_close_secs: Dict[str, List[float]] = {}
 
-    # Ø İlk Yanıt
     for e in first_rows:
-        root_ts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
-        if not root_ts:
-            continue
-        sec = (e.ts - root_ts).total_seconds()
-        if sec < 0:
-            continue
-        per_emp_first_secs.setdefault(e.employee_id, []).append(sec)
+        rts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
+        if not rts: continue
+        sec = (e.ts - rts).total_seconds()
+        if sec >= 0:
+            per_emp_first_secs.setdefault(e.employee_id, []).append(sec)
 
-    # Ø Sonuçlandırma
     for e in close_rows:
-        root_ts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
-        if not root_ts:
-            continue
-        sec = (e.ts - root_ts).total_seconds()
-        if sec < 0:
-            continue
-        per_emp_close_secs.setdefault(e.employee_id, []).append(sec)
+        rts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
+        if not rts: continue
+        sec = (e.ts - rts).total_seconds()
+        if sec >= 0:
+            per_emp_close_secs.setdefault(e.employee_id, []).append(sec)
 
     if not per_emp_close_secs:
         return []
 
-    # ------- Finans Ekip Ø SON 7 GÜN (trend için) -------
     team_close_trend_rows: List[Event] = (
         db.query(Event)
         .filter(
             Event.source_channel == "finans",
             Event.type.in_(close_types),
             Event.employee_id.isnot(None),
-            Event.ts >= trend_from,
-            Event.ts < trend_to,
-        )
-        .all()
+            Event.ts >= trend_from, Event.ts < trend_to,
+        ).all()
     )
     team_root_cache: Dict[Tuple[int,int], datetime | None] = {}
     team_secs: List[float] = []
     for e in team_close_trend_rows:
         rts = _root_origin_ts(e.chat_id, e.msg_id, db, team_root_cache)
-        if not rts:
-            continue
+        if not rts: continue
         sec = (e.ts - rts).total_seconds()
         if sec >= 0:
             team_secs.append(sec)
     team_avg_close_sec = mean(team_secs) if team_secs else None
-    # ----------------------------------------------------
 
-    # satırlar
     rows = []
     for emp_id, close_secs in per_emp_close_secs.items():
         full_name, dept = emp_info.get(emp_id, (emp_id, "-"))
@@ -366,12 +316,11 @@ def finance_close_time(
             }
         })
 
-    # sıralama
     if order == "avg_desc":
         rows.sort(key=lambda r: (r["avg_close_sec"],), reverse=True)
     elif order == "cnt_desc":
         rows.sort(key=lambda r: (r["count_total"], r["avg_close_sec"]), reverse=True)
-    else:  # avg_asc default
+    else:
         rows.sort(key=lambda r: (r["avg_close_sec"], -r["count_total"]))
 
     return rows[offset: offset + limit]
