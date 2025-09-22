@@ -23,8 +23,8 @@ EMPLOYEE_ID_COL = "employee_id"
 EMPLOYEE_FULLNAME_COL = "full_name"
 EMPLOYEE_DEPT_COL = "department"
 
-# DB'de mevcut olan thread kolonu (loglarda çalıştığı görülen)
-THREAD_COL = "correlation_id"  # ← düzeltildi (corr yerine correlation_id)
+# Thread kolonu (şimdilik sabit; kanalı daha sonra ekleyebiliriz)
+THREAD_COL = "correlation_id"
 
 FIRST_REPLY_TYPES = ("reply_first",)
 CLOSE_TYPES = ("approve", "reply_close", "reject")
@@ -156,6 +156,16 @@ def _sql_finance_without_channel(order_clause: str) -> str:
     """
 
 
+def _to_float(x: object) -> float | None:
+    """Decimal/str/int → float; None ise None."""
+    if x is None:
+        return None
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+
 def _trend_emoji(pct: Optional[float]) -> str:
     if pct is None:
         return "•"
@@ -171,8 +181,7 @@ def finance_close_time(
     db: Session = Depends(get_db),
 ):
     """
-    Finance (departman=Finans) kapanış performansı — Bonus şemasına birebir uyumlu Row[] döner.
-    Not: Kanal sütunu adı belirsiz olduğu için, yalnızca departman filtresi uygulanır.
+    Finance (departman=Finans) kapanış performansı — Bonus şemasına birebir Row[] döner.
     """
     today = datetime.utcnow().date()
     _frm = _parse_date(frm, default_dt=datetime.combine(today - timedelta(days=6), datetime.min.time()))
@@ -191,15 +200,17 @@ def finance_close_time(
     try:
         rows = db.execute(text(sql), params).mappings().all()
     except Exception as exc:
-        # Neden: thread kolonu yanlışsa burada patlar → correlation_id dışı bir isimse tek satırda değiştir.
         raise HTTPException(status_code=500, detail=f"Finance close-time query failed (department-only). Error: {exc}")
 
     out: List[Row] = []
-    team_avg = rows[0]["team_avg_close_sec"] if rows else None
+    team_avg = _to_float(rows[0]["team_avg_close_sec"]) if rows else None
 
     for r in rows:
-        avg_close = float(r["avg_close_sec"]) if r["avg_close_sec"] is not None else None
-        if team_avg and avg_close:
+        avg_close = _to_float(r["avg_close_sec"])
+        avg_first = _to_float(r["avg_first_sec"])
+
+        # Trend: ekibin son 7g ortalamasına göre (pozitif = daha hızlı)
+        if team_avg is not None and team_avg > 0 and avg_close is not None:
             pct = round((team_avg - avg_close) * 100.0 / team_avg, 2)
         else:
             pct = None
@@ -210,9 +221,13 @@ def finance_close_time(
                 full_name=r["full_name"],
                 department=r["department"],
                 count_total=int(r["count_total"]),
-                avg_first_sec=float(r["avg_first_sec"]) if r["avg_first_sec"] is not None else None,
-                avg_close_sec=float(avg_close) if avg_close is not None else 0.0,
-                trend=Trend(emoji=_trend_emoji(pct), pct=pct, team_avg_close_sec=float(team_avg) if team_avg else None),
+                avg_first_sec=avg_first,
+                avg_close_sec=avg_close or 0.0,
+                trend=Trend(
+                    emoji=_trend_emoji(pct),
+                    pct=pct,
+                    team_avg_close_sec=team_avg,
+                ),
             )
         )
 
