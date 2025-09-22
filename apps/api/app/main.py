@@ -24,7 +24,6 @@ from app.api.routes_jobs import router as jobs_router
 from app.api.routes_identities import router as identities_router
 from app.api.routes_employee_view import router as employee_view_router
 from app.api.routes_reports import router as reports_router
-from app.api.routes_reports_finance import router as finance_reports_router
 
 
 # V1: hızlı başlat (prod'da Alembic'e geçilecek)
@@ -89,4 +88,3 @@ app.include_router(jobs_router)
 app.include_router(identities_router)
 app.include_router(employee_view_router)
 app.include_router(reports_router)
-app.include_router(finance_reports_router)
