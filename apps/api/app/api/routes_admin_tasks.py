@@ -12,18 +12,9 @@ from app.db.models_admin_tasks import AdminTask
 router = APIRouter(prefix="/admin-tasks", tags=["admin_tasks"])
 
 class TaskOut(BaseModel):
-    id: int
-    date: date
-    shift: Optional[str]
-    title: str
-    department: Optional[str]
-    assignee_employee_id: Optional[str]
-    due_ts: Optional[datetime]
-    grace_min: int
-    status: str
-    is_done: bool
-    done_at: Optional[datetime]
-    done_by: Optional[str]
+    id: int; date: date; shift: Optional[str]; title: str; department: Optional[str]
+    assignee_employee_id: Optional[str]; due_ts: Optional[datetime]; grace_min: int
+    status: str; is_done: bool; done_at: Optional[datetime]; done_by: Optional[str]
     class Config: orm_mode = True
 
 @router.get("", response_model=List[TaskOut], dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))])
@@ -36,8 +27,7 @@ def get_tasks(
     db: Session = Depends(get_db),
 ):
     _d = date.fromisoformat(d) if d else datetime.utcnow().date()
-    rows = list_tasks(db, _d, shift, dept, limit, offset)
-    return rows
+    return list_tasks(db, _d, shift, dept, limit, offset)
 
 @router.post("/generate", dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))])
 def generate(d: Optional[str] = None, db: Session = Depends(get_db)):
@@ -51,8 +41,7 @@ class TickIn(BaseModel):
 @router.patch("/{task_id}/tick", response_model=TaskOut, dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))])
 def tick(task_id: int, body: TickIn, db: Session = Depends(get_db)):
     try:
-        t = tick_task(db, task_id, body.who)
-        return t
+        return tick_task(db, task_id, body.who)
     except ValueError:
         raise HTTPException(status_code=404, detail="task not found")
 
