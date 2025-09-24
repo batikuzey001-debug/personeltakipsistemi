@@ -1,4 +1,5 @@
 # apps/api/app/main.py
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -13,7 +14,7 @@ import app.models.facts         # facts_daily, facts_monthly
 import app.models.identities    # employee_identities
 import app.models.models        # employees (department + kart alanları)
 
-# ↓ Admin Görevleri modelleri (tabloların create_all'da oluşması için import)
+# Admin Görevleri modelleri (tabloların create_all'da oluşması için import)
 import app.db.models_admin_tasks  # admin_tasks, admin_task_templates
 
 # ROUTERLAR
@@ -27,10 +28,10 @@ from app.api.routes_jobs import router as jobs_router
 from app.api.routes_identities import router as identities_router
 from app.api.routes_employee_view import router as employee_view_router
 from app.api.routes_reports import router as reports_router
-from app.api.routes_admin_tasks import router as admin_tasks_router  # ← EKLENDİ
+from app.api.routes_admin_tasks import router as admin_tasks_router  # ← Admin görevleri
 
 # Scheduler (geciken görev tarayıcı)
-from app.scheduler.admin_tasks_jobs import start_scheduler  # ← EKLENDİ
+from app.scheduler.admin_tasks_jobs import start_scheduler
 
 # V1: hızlı başlat (prod'da Alembic'e geçilecek)
 Base.metadata.create_all(bind=engine)
@@ -66,7 +67,12 @@ MIGRATIONS_SQL = [
     "             WHERE table_name='employees' AND column_name='telegram_user_id' AND data_type='integer') THEN "
     "    EXECUTE 'ALTER TABLE employees ALTER COLUMN telegram_user_id TYPE BIGINT USING telegram_user_id::bigint'; "
     "  END IF; "
-    "END $$;"
+    "END $$;",
+
+    # admin_tasks için faydalı indeksler
+    "CREATE INDEX IF NOT EXISTS idx_admin_tasks_date ON admin_tasks(date);",
+    "CREATE INDEX IF NOT EXISTS idx_admin_tasks_status ON admin_tasks(status);",
+    "CREATE INDEX IF NOT EXISTS idx_admin_tasks_assignee ON admin_tasks(assignee_employee_id);",
 ]
 
 @app.on_event("startup")
@@ -79,10 +85,13 @@ def run_startup_migrations():
             except Exception as e:
                 print(f"[startup-migration] skip/err: {e}")
 
-    # Admin Görevleri: geciken görev tarayıcısını başlat
+    # Admin Görevleri: geciken görev tarayıcısını başlat (çoklu worker için guard)
     try:
-        start_scheduler()  # interval 5 dk; Europe/Istanbul
-        print("[scheduler] admin_tasks started")
+        if os.getenv("RUN_SCHEDULER", "1") == "1":
+            start_scheduler()  # interval 5 dk; Europe/Istanbul
+            print("[scheduler] admin_tasks started")
+        else:
+            print("[scheduler] disabled by RUN_SCHEDULER")
     except Exception as e:
         print(f"[scheduler] start err: {e}")
 
@@ -101,4 +110,4 @@ app.include_router(jobs_router)
 app.include_router(identities_router)
 app.include_router(employee_view_router)
 app.include_router(reports_router)
-app.include_router(admin_tasks_router)  # ← EKLENDİ
+app.include_router(admin_tasks_router)  # admin-tasks uçları
