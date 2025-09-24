@@ -22,8 +22,9 @@ export default function Sidebar() {
 
   const adminOnly = [
     { to: "/identities", label: "Kişi Eşleştirme" },
+    { to: "/reports/daily", label: "Rapor • Günlük (Bonus/Finans)" }, // ← YENİ
     { to: "/reports/bonus/close-time", label: "Rapor • Bonus Kapanış" },
-    { to: "/reports/finance/close-time", label: "Rapor • Finans Kapanış" }, // ← EKLENDİ
+    { to: "/reports/finance/close-time", label: "Rapor • Finans Kapanış" },
     { to: "/users", label: "Kullanıcılar" },
   ];
 
