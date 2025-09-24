@@ -1,43 +1,51 @@
 // apps/admin/src/pages/AdminBotSettings.tsx
 import React, { useEffect, useState } from "react";
+
 const API = (import.meta.env.VITE_API_BASE_URL as string) || "https://personel-takip-api-production.up.railway.app";
 
-type BotSettings = { admin_tasks_tg_enabled: boolean };
+type BotSettings = {
+  admin_tasks_tg_enabled: boolean;
+  bonus_tg_enabled: boolean;
+  finance_tg_enabled: boolean;
+};
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem("token") || "";
-  const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, "Content-Type":"application/json" }, ...init });
+  const r = await fetch(`${API}${path}`, {
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    ...init,
+  });
   if (!r.ok) throw new Error(await r.text());
-  return r.json() as Promise<T>;
+  return (await r.json()) as T;
 }
 
 export default function AdminBotSettings() {
-  const [settings, setSettings] = useState<BotSettings | null>(null);
+  const [data, setData] = useState<BotSettings | null>(null);
   const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState<string>(""); const [err, setErr] = useState<string>("");
+  const [msg, setMsg] = useState(""); const [err, setErr] = useState("");
 
   async function load() {
-    setErr(""); setMsg(""); setLoading(true);
-    try { setSettings(await api<BotSettings>("/admin-bot/settings")); }
+    setMsg(""); setErr(""); setLoading(true);
+    try { setData(await api<BotSettings>("/admin-bot/settings")); }
     catch(e:any){ setErr(e?.message || "Ayarlar alınamadı"); }
     finally{ setLoading(false); }
   }
-  async function save(next: Partial<BotSettings>) {
-    if (!settings) return;
-    setErr(""); setMsg(""); setLoading(true);
+
+  async function save(partial: Partial<BotSettings>) {
+    setMsg(""); setErr(""); setLoading(true);
     try {
-      const body = { ...settings, ...next };
-      const res = await api<BotSettings>("/admin-bot/settings", { method:"PUT", body: JSON.stringify(body) });
-      setSettings(res); setMsg("Ayar kaydedildi.");
+      const next = await api<BotSettings>("/admin-bot/settings", { method:"PUT", body: JSON.stringify(partial) });
+      setData(next); setMsg("Ayar kaydedildi.");
     } catch(e:any){ setErr(e?.message || "Kaydedilemedi"); }
     finally{ setLoading(false); }
   }
 
   useEffect(()=>{ load(); }, []);
 
-  const container: React.CSSProperties = { maxWidth: 720, margin:"0 auto", padding:16, display:"grid", gap:12 };
+  const container: React.CSSProperties = { maxWidth: 760, margin:"0 auto", padding:16, display:"grid", gap:12 };
   const card: React.CSSProperties = { border:"1px solid #e5e7eb", borderRadius:12, padding:16, background:"#fff" };
-  const row: React.CSSProperties = { display:"flex", alignItems:"center", justifyContent:"space-between", gap:12 };
+  const row: React.CSSProperties = { display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, padding:"8px 0" };
+  const subtitle: React.CSSProperties = { fontSize:12, color:"#666" };
 
   return (
     <div style={container}>
@@ -47,19 +55,50 @@ export default function AdminBotSettings() {
         <div style={row}>
           <div>
             <div style={{ fontWeight:600 }}>Admin Görevleri Bildirimleri</div>
-            <div style={{ fontSize:12, color:"#666" }}>
-              Kapatıldığında tick/şift/gün sonu dahil tüm Telegram mesajları durur.
-            </div>
+            <div style={subtitle}>Tick/şift/gün sonu mesajları</div>
           </div>
-
           <label style={{ display:"inline-flex", alignItems:"center", gap:8 }}>
             <input
               type="checkbox"
-              checked={!!settings?.admin_tasks_tg_enabled}
+              checked={!!data?.admin_tasks_tg_enabled}
               onChange={(e)=>save({ admin_tasks_tg_enabled: e.target.checked })}
-              disabled={!settings || loading}
+              disabled={!data || loading}
             />
-            {settings?.admin_tasks_tg_enabled ? "Açık" : "Kapalı"}
+            {data?.admin_tasks_tg_enabled ? "Açık" : "Kapalı"}
+          </label>
+        </div>
+
+        <hr style={{ border:"none", borderTop:"1px solid #eee", margin:"8px 0" }}/>
+
+        <div style={row}>
+          <div>
+            <div style={{ fontWeight:600 }}>Bonus Bildirimleri</div>
+            <div style={subtitle}>Bonus rapor/işlem bildirimleri</div>
+          </div>
+          <label style={{ display:"inline-flex", alignItems:"center", gap:8 }}>
+            <input
+              type="checkbox"
+              checked={!!data?.bonus_tg_enabled}
+              onChange={(e)=>save({ bonus_tg_enabled: e.target.checked })}
+              disabled={!data || loading}
+            />
+            {data?.bonus_tg_enabled ? "Açık" : "Kapalı"}
+          </label>
+        </div>
+
+        <div style={row}>
+          <div>
+            <div style={{ fontWeight:600 }}>Finans Bildirimleri</div>
+            <div style={subtitle}>Finans rapor/işlem bildirimleri</div>
+          </div>
+          <label style={{ display:"inline-flex", alignItems:"center", gap:8 }}>
+            <input
+              type="checkbox"
+              checked={!!data?.finance_tg_enabled}
+              onChange={(e)=>save({ finance_tg_enabled: e.target.checked })}
+              disabled={!data || loading}
+            />
+            {data?.finance_tg_enabled ? "Açık" : "Kapalı"}
           </label>
         </div>
       </div>
