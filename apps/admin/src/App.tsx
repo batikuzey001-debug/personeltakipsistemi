@@ -14,6 +14,7 @@ import { RequireRole } from "./lib/auth";
 // import ReportBonusClose from "./pages/ReportBonusClose";   // KALDIRILDI
 // import ReportsFinance from "./pages/ReportsFinance";       // KALDIRILDI
 import ReportsDaily from "./pages/ReportsDaily";               // Günlük tek sayfa
+import AdminTasks from "./pages/AdminTasks";                   // ← EKLENDİ
 
 function Protected({ children }: { children: React.ReactNode }) {
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
@@ -36,6 +37,9 @@ export default function App() {
 
       {/* Tek rapor sayfası */}
       <Route path="/reports/daily" element={<Protected><Layout><ReportsDaily /></Layout></Protected>} />
+
+      {/* Admin Görevleri */}
+      <Route path="/admin/tasks" element={<Protected><Layout><AdminTasks /></Layout></Protected>} />  {/* ← EKLENDİ */}
 
       {/* Eski yolları yeni sayfaya yönlendir */}
       <Route path="/reports/bonus/close-time" element={<Navigate to="/reports/daily" replace />} />
