@@ -58,10 +58,10 @@ MIGRATIONS_SQL = [
     # employees: kart alanları (varsa atlar)
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS department VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(255);",
-    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
-    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS phone VARCHAR(32);",
-    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
-    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS phone VARCHAR(32);",
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
 
     # **kritik düzeltme**: telegram_user_id sütunu daha önce INTEGER ise BIGINT'e çevir
     "DO $$ BEGIN "
@@ -83,6 +83,10 @@ MIGRATIONS_SQL = [
     " updated_at TIMESTAMP NOT NULL DEFAULT NOW()"
     ");",
     "INSERT INTO admin_settings(key,value) VALUES ('admin_tasks_tg_enabled','0') "
+    "ON CONFLICT (key) DO NOTHING;",
+    "INSERT INTO admin_settings(key,value) VALUES ('bonus_tg_enabled','0') "
+    "ON CONFLICT (key) DO NOTHING;",
+    "INSERT INTO admin_settings(key,value) VALUES ('finance_tg_enabled','0') "
     "ON CONFLICT (key) DO NOTHING;",
 ]
 
