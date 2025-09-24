@@ -7,12 +7,13 @@ import KPIs from "./pages/KPIs";
 import Scores from "./pages/Scores";
 import Users from "./pages/Users";
 import IdentitiesPage from "./pages/Identities";
-import EmployeeDetail from "./pages/EmployeeDetail";   // eski genel detay (opsiyonel)
-import EmployeeProfile from "./pages/EmployeeProfile";  // Kişi sayfası
+import EmployeeDetail from "./pages/EmployeeDetail";
+import EmployeeProfile from "./pages/EmployeeProfile";
 import Layout from "./components/Layout";
 import { RequireRole } from "./lib/auth";
-import ReportBonusClose from "./pages/ReportBonusClose"; // Bonus kapanış raporu
-import ReportsFinance from "./pages/ReportsFinance";      // Finans kapanış raporu (EKLENDİ)
+import ReportBonusClose from "./pages/ReportBonusClose";
+import ReportsFinance from "./pages/ReportsFinance";
+import ReportsDaily from "./pages/ReportsDaily"; // ← YENİ
 
 function Protected({ children }: { children: React.ReactNode }) {
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
@@ -23,119 +24,21 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
 
-      <Route
-        path="/dashboard"
-        element={
-          <Protected>
-            <Layout>
-              <Dashboard />
-            </Layout>
-          </Protected>
-        }
-      />
+      <Route path="/dashboard" element={<Protected><Layout><Dashboard /></Layout></Protected>} />
+      <Route path="/employees" element={<Protected><Layout><Employees /></Layout></Protected>} />
+      <Route path="/kpis" element={<Protected><Layout><KPIs /></Layout></Protected>} />
+      <Route path="/scores" element={<Protected><Layout><Scores /></Layout></Protected>} />
+      <Route path="/users" element={<Protected><Layout><Users /></Layout></Protected>} />
+      <Route path="/identities" element={<Protected><Layout><IdentitiesPage /></Layout></Protected>} />
 
-      <Route
-        path="/employees"
-        element={
-          <Protected>
-            <Layout>
-              <Employees />
-            </Layout>
-          </Protected>
-        }
-      />
+      <Route path="/employee-detail" element={<Protected><Layout><EmployeeDetail /></Layout></Protected>} />
+      <Route path="/employees/:employee_id" element={<Protected><Layout><EmployeeProfile /></Layout></Protected>} />
 
-      <Route
-        path="/kpis"
-        element={
-          <Protected>
-            <Layout>
-              <KPIs />
-            </Layout>
-          </Protected>
-        }
-      />
+      <Route path="/reports/bonus/close-time" element={<Protected><Layout><ReportBonusClose /></Layout></Protected>} />
+      <Route path="/reports/finance/close-time" element={<Protected><Layout><ReportsFinance /></Layout></Protected>} />
 
-      <Route
-        path="/scores"
-        element={
-          <Protected>
-            <Layout>
-              <Scores />
-            </Layout>
-          </Protected>
-        }
-      />
-
-      <Route
-        path="/users"
-        element={
-          <Protected>
-            <Layout>
-              <Users />
-            </Layout>
-          </Protected>
-        }
-      />
-
-      <Route
-        path="/identities"
-        element={
-          <Protected>
-            <Layout>
-              <IdentitiesPage />
-            </Layout>
-          </Protected>
-        }
-      />
-
-      {/* Eski genel sayfa (opsiyonel) */}
-      <Route
-        path="/employee-detail"
-        element={
-          <Protected>
-            <Layout>
-              <EmployeeDetail />
-            </Layout>
-          </Protected>
-        }
-      />
-
-      {/* Kişi profili /employees/:employee_id */}
-      <Route
-        path="/employees/:employee_id"
-        element={
-          <Protected>
-            <Layout>
-              <EmployeeProfile />
-            </Layout>
-          </Protected>
-        }
-      />
-
-      {/* Bonus: Kapanış Süreleri */}
-      <Route
-        path="/reports/bonus/close-time"
-        element={
-          <Protected>
-            <Layout>
-              <ReportBonusClose />
-            </Layout>
-          </Protected>
-        }
-      />
-
-      {/* Finans: Kapanış Süreleri (YENİ) */}
-      <Route
-        path="/reports/finance/close-time"
-        element={
-          <Protected>
-            <Layout>
-              <ReportsFinance />
-            </Layout>
-          </Protected>
-        }
-      />
+      {/* Günlük rapor (kanal toggle) */}
+      <Route path="/reports/daily" element={<Protected><Layout><ReportsDaily /></Layout></Protected>} />
 
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
