@@ -9,6 +9,8 @@ from sqlalchemy import and_
 from app.db.models_admin_tasks import AdminTask, AdminTaskTemplate, TaskStatus
 from app.core.admin_tasks_config import ADMIN_TASKS_TG_CHAT_ID, ADMIN_TASKS_TG_TOKEN, shift_end_dt
 
+# ---------------- Core Queries ----------------
+
 def list_tasks(db: Session, d: date, shift: Optional[str] = None, dept: Optional[str] = None, limit=200, offset=0):
     q = db.query(AdminTask).filter(AdminTask.date == d)
     if shift: q = q.filter(AdminTask.shift == shift)
@@ -17,7 +19,9 @@ def list_tasks(db: Session, d: date, shift: Optional[str] = None, dept: Optional
     return q.offset(offset).limit(limit).all()
 
 def create_from_templates_for_day(db: Session, d: date) -> int:
-    """Şablonlardan günün görevlerini üretir (assignee yok, grace=0)."""
+    """
+    Şablonlardan günün görevlerini üretir (assignee yok, grace=0).
+    """
     tpls = db.query(AdminTaskTemplate).filter(AdminTaskTemplate.is_active == True).all()
     created = 0
     for t in tpls:
@@ -37,13 +41,15 @@ def create_from_templates_for_day(db: Session, d: date) -> int:
     return created
 
 def tick_task(db: Session, task_id: int, who: str) -> AdminTask:
-    """Tick atanınca otomatik assignee = who; grace=0 (anında geçikme kıyası)."""
+    """
+    Tick atanınca otomatik assignee = who; grace=0 (anında gecikme kıyası).
+    Telegram'a anlık 'done' bildirimi GÖNDERİLMEZ (raporlar vardiya/gün sonunda).
+    """
     t = db.get(AdminTask, task_id)
     if not t:
         raise ValueError("task not found")
     now = datetime.utcnow()
 
-    # otomatik atan
     if not t.assignee_employee_id:
         t.assignee_employee_id = who
 
@@ -53,36 +59,23 @@ def tick_task(db: Session, task_id: int, who: str) -> AdminTask:
 
     is_late = False
     if t.due_ts:
-        # grace = 0
-        deadline = t.due_ts
+        deadline = t.due_ts  # grace yok
         is_late = now > deadline
     t.status = TaskStatus.late if is_late else TaskStatus.done
 
     db.commit(); db.refresh(t)
-    _notify_done(t)
     return t
 
-def _notify_done(t: AdminTask):
-    if not ADMIN_TASKS_TG_TOKEN or not ADMIN_TASKS_TG_CHAT_ID: return
-    try:
-        who = t.assignee_employee_id or t.done_by or "-"
-        text = f"✅ {t.department or '-'} • {t.title} — {who}"
-        requests.post(
-            f"https://api.telegram.org/bot{ADMIN_TASKS_TG_TOKEN}/sendMessage",
-            json={"chat_id": int(ADMIN_TASKS_TG_CHAT_ID), "text": text},
-            timeout=5,
-        )
-    except Exception:
-        pass
-
 def scan_overdue_and_alert(db: Session, cooldown_min=60) -> int:
-    """Done=False ve due geçmişse late + uyarı (cooldown)."""
+    """
+    Done=False ve due geçmişse late + cooldown'a göre uyarı (vardiya içi tarama için).
+    """
     now = datetime.utcnow()
     alert_cnt = 0
     rows = db.query(AdminTask).filter(AdminTask.is_done == False, AdminTask.due_ts.isnot(None)).all()
     for t in rows:
-        deadline = t.due_ts  # grace yok
-        if now <= deadline: 
+        deadline = t.due_ts
+        if now <= deadline:
             continue
         if t.last_alert_at and (now - t.last_alert_at) < timedelta(minutes=cooldown_min):
             continue
@@ -92,26 +85,37 @@ def scan_overdue_and_alert(db: Session, cooldown_min=60) -> int:
         _notify_late(t, deadline); alert_cnt += 1
     return alert_cnt
 
-def _notify_late(t: AdminTask, deadline: datetime):
-    if not ADMIN_TASKS_TG_TOKEN or not ADMIN_TASKS_TG_CHAT_ID: return
+# ---------------- Telegram Helpers ----------------
+
+def _tg_send(text: str) -> bool:
+    if not ADMIN_TASKS_TG_TOKEN or not ADMIN_TASKS_TG_CHAT_ID:
+        return False
     try:
-        who = t.assignee_employee_id or "-"
-        text = "⏰ Geciken Görev\n" \
-               f"📌 {t.title}\n" \
-               f"👤 {who}\n" \
-               f"🕒 Bitiş: {deadline.isoformat(timespec='minutes')}Z"
         requests.post(
             f"https://api.telegram.org/bot{ADMIN_TASKS_TG_TOKEN}/sendMessage",
             json={"chat_id": int(ADMIN_TASKS_TG_CHAT_ID), "text": text},
             timeout=5,
         )
+        return True
     except Exception:
-        pass
+        return False
+
+def _notify_late(t: AdminTask, deadline: datetime):
+    who = t.assignee_employee_id or "-"
+    text = (
+        "⏰ Geciken Görev\n"
+        f"📌 {t.title}\n"
+        f"👤 {who}\n"
+        f"🕒 Bitiş: {deadline.isoformat(timespec='minutes')}Z"
+    )
+    _tg_send(text)
+
+# ---------------- Reports ----------------
 
 def send_summary_report(db: Session, d: date, shift: Optional[str] = None, include_late_list: bool = True) -> bool:
-    """Bugüne/şifte göre özet Telegram raporu gönderir."""
-    if not ADMIN_TASKS_TG_TOKEN or not ADMIN_TASKS_TG_CHAT_ID:
-        return False
+    """
+    Gün/şift özeti (her zaman gönder). Gün sonu için kullanılabilir.
+    """
     q = db.query(AdminTask).filter(AdminTask.date == d)
     if shift: q = q.filter(AdminTask.shift == shift)
     rows = q.all()
@@ -130,20 +134,53 @@ def send_summary_report(db: Session, d: date, shift: Optional[str] = None, inclu
         f"• ❌ Geciken: {late}",
         f"• ⏳ Beklemede: {pending}",
     ]
-    if include_late_list and late:
-        lines.append("\nGecikenler:")
+    if include_late_list and (late or pending):
+        lines.append("")
+        lines.append("Açık/Geciken:")
         for r in rows:
-            if r.status == TaskStatus.late:
+            if r.status != TaskStatus.done:
                 who = r.assignee_employee_id or "-"
                 sh  = r.shift or "-"
                 lines.append(f"• [{sh}] {r.title} — {who}")
-    text = "\n".join(lines)
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{ADMIN_TASKS_TG_TOKEN}/sendMessage",
-            json={"chat_id": int(ADMIN_TASKS_TG_CHAT_ID), "text": text},
-            timeout=5,
-        )
-        return True
-    except Exception:
+    return _tg_send("\n".join(lines))
+
+def send_shift_end_report_if_pending(db: Session, d: date, shift: str) -> bool:
+    """
+    Şift bittiğinde SADECE açık/geciken varsa rapor gönder.
+    """
+    rows = db.query(AdminTask).filter(
+        AdminTask.date == d,
+        AdminTask.shift == shift
+    ).all()
+    if not rows:
         return False
+    has_pending = any(r.status != TaskStatus.done for r in rows)
+    if not has_pending:
+        return False
+
+    total = len(rows)
+    done = sum(1 for r in rows if r.status == TaskStatus.done)
+    late = sum(1 for r in rows if r.status == TaskStatus.late)
+    pending = total - done - late
+
+    d_str = d.strftime("%d.%m.%Y")
+    lines = [
+        f"🔔 ŞİFT SONU — {d_str} • {shift}",
+        f"• 🗂️ Toplam: {total}",
+        f"• ✅ Tamamlanan: {done}",
+        f"• ❌ Geciken: {late}",
+        f"• ⏳ Beklemede: {pending}",
+        "",
+        "Açık/Geciken:",
+    ]
+    for r in rows:
+        if r.status != TaskStatus.done:
+            who = r.assignee_employee_id or "-"
+            lines.append(f"• {r.title} — {who}")
+    return _tg_send("\n".join(lines))
+
+def send_day_end_report(db: Session, d: date) -> bool:
+    """
+    Gün sonu raporu (her zaman gönderilir).
+    """
+    return send_summary_report(db, d, shift=None, include_late_list=True)
