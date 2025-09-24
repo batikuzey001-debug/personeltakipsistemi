@@ -45,6 +45,16 @@ export default function AdminTasks() {
     setRows(rows.map(r=> r.id===id ? t : r));
   }
 
+  async function generateToday() {
+    await api(`/admin-tasks/generate`, { method:"POST" });
+    await load();
+  }
+
+  async function scanOverdue() {
+    await api(`/admin-tasks/scan-overdue`, { method:"POST" });
+    await load();
+  }
+
   useEffect(()=>{ load(); /* eslint-disable-next-line */ }, []);
 
   const container: React.CSSProperties = { maxWidth: 1100, margin:"0 auto", padding:12, display:"grid", gap:12 };
@@ -66,8 +76,8 @@ export default function AdminTasks() {
           <option>Admin</option><option>Finans</option><option>Bonus</option><option>LC</option>
         </select>
         <button type="submit" disabled={loading}>{loading ? "Yükleniyor…" : "Listele"}</button>
-        <button type="button" onClick={()=>api(`/admin-tasks/generate`, {method:"POST"}).then(load)}>Bugünü Oluştur</button>
-        <button type="button" onClick={()=>api(`/admin-tasks/scan-overdue`, {method:"POST"}).then(load)}>Gecikmeleri Tara</button>
+        <button type="button" onClick={generateToday}>Bugünü Oluştur</button>
+        <button type="button" onClick={scanOverdue}>Gecikmeleri Tara</button>
         {err && <span style={{ color:"#b00020", fontSize:12 }}>{err}</span>}
       </form>
 
