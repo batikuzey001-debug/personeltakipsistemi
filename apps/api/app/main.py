@@ -14,8 +14,9 @@ import app.models.facts         # facts_daily, facts_monthly
 import app.models.identities    # employee_identities
 import app.models.models        # employees (department + kart alanları)
 
-# Admin Görevleri modelleri (tabloların create_all'da oluşması için import)
-import app.db.models_admin_tasks  # admin_tasks, admin_task_templates
+# Admin Görevleri modelleri
+import app.db.models_admin_tasks     # admin_tasks, admin_task_templates
+import app.db.models_admin_settings  # admin_settings (bot ayarları)
 
 # ROUTERLAR
 from app.api.routes_auth import router as auth_router
@@ -28,7 +29,8 @@ from app.api.routes_jobs import router as jobs_router
 from app.api.routes_identities import router as identities_router
 from app.api.routes_employee_view import router as employee_view_router
 from app.api.routes_reports import router as reports_router
-from app.api.routes_admin_tasks import router as admin_tasks_router  # ← Admin görevleri
+from app.api.routes_admin_tasks import router as admin_tasks_router
+from app.api.routes_admin_bot import router as admin_bot_router  # Bot İşlemleri
 
 # Scheduler (geciken görev tarayıcı)
 from app.scheduler.admin_tasks_jobs import start_scheduler
@@ -56,10 +58,10 @@ MIGRATIONS_SQL = [
     # employees: kart alanları (varsa atlar)
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS department VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(255);",
-    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
-    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS phone VARCHAR(32);",
-    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
-    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
+    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
+    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS phone VARCHAR(32);",
+    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
+    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
 
     # **kritik düzeltme**: telegram_user_id sütunu daha önce INTEGER ise BIGINT'e çevir
     "DO $$ BEGIN "
@@ -73,6 +75,15 @@ MIGRATIONS_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_admin_tasks_date ON admin_tasks(date);",
     "CREATE INDEX IF NOT EXISTS idx_admin_tasks_status ON admin_tasks(status);",
     "CREATE INDEX IF NOT EXISTS idx_admin_tasks_assignee ON admin_tasks(assignee_employee_id);",
+
+    # admin_settings tablosu
+    "CREATE TABLE IF NOT EXISTS admin_settings ("
+    " key TEXT PRIMARY KEY,"
+    " value TEXT NOT NULL,"
+    " updated_at TIMESTAMP NOT NULL DEFAULT NOW()"
+    ");",
+    "INSERT INTO admin_settings(key,value) VALUES ('admin_tasks_tg_enabled','0') "
+    "ON CONFLICT (key) DO NOTHING;",
 ]
 
 @app.on_event("startup")
@@ -110,4 +121,5 @@ app.include_router(jobs_router)
 app.include_router(identities_router)
 app.include_router(employee_view_router)
 app.include_router(reports_router)
-app.include_router(admin_tasks_router)  # admin-tasks uçları
+app.include_router(admin_tasks_router)
+app.include_router(admin_bot_router)   # Bot İşlemleri uçları
