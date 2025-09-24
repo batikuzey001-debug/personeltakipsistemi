@@ -20,12 +20,13 @@ export default function Sidebar() {
     { to: "/employees", label: "Personeller" },
   ];
 
-  // Yönetim menüsü (rapor + görevler + bot ayarları)
+  // Yönetim menüsü (rapor + görevler + bot/bildirim ayarları)
   const adminOnly = [
     { to: "/reports/daily", label: "Rapor • Günlük (Bonus/Finans)" },
     { to: "/admin/tasks", label: "Admin Görevleri" },
     { to: "/admin/tasks/templates", label: "Görev Şablonları" },
-    { to: "/admin/bot", label: "Bot İşlemleri" }, // ← EKLENDİ
+    { to: "/admin/bot", label: "Bot İşlemleri" },
+    { to: "/admin/notifications", label: "Bildirimler" }, // ← EKLENDİ
     { to: "/identities", label: "Kişi Eşleştirme" },
     { to: "/users", label: "Kullanıcılar" },
   ];
