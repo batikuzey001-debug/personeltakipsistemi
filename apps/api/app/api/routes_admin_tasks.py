@@ -6,7 +6,10 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.deps import get_db, RolesAllowed
-from app.services.admin_tasks_service import list_tasks, create_from_templates_for_day, tick_task, scan_overdue_and_alert
+from app.services.admin_tasks_service import (
+    list_tasks, create_from_templates_for_day, tick_task,
+    scan_overdue_and_alert, send_summary_report  # ← EKLENDİ
+)
 from app.db.models_admin_tasks import AdminTask
 
 router = APIRouter(prefix="/admin-tasks", tags=["admin_tasks"])
@@ -49,3 +52,20 @@ def tick(task_id: int, body: TickIn, db: Session = Depends(get_db)):
 def scan_overdue(cooldown_min: int = 60, db: Session = Depends(get_db)):
     n = scan_overdue_and_alert(db, cooldown_min=cooldown_min)
     return {"alerts": n}
+
+# ====== YENİ: Telegram günlük rapor gönder ======
+class ReportIn(BaseModel):
+    d: Optional[str] = None         # YYYY-MM-DD (default today)
+    shift: Optional[str] = None     # "Sabah/Öğlen/Akşam/Gece" (opsiyonel)
+    include_late_list: bool = True  # gecikenleri listele
+
+@router.post(
+    "/report",
+    dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))]
+)
+def send_report(body: ReportIn, db: Session = Depends(get_db)):
+    _d = date.fromisoformat(body.d) if body.d else datetime.utcnow().date()
+    sent = send_summary_report(db, _d, shift=body.shift, include_late_list=body.include_late_list)
+    if not sent:
+        raise HTTPException(status_code=400, detail="report not sent (check token/chat id or no data)")
+    return {"ok": True, "date": _d.isoformat(), "shift": body.shift or None}
