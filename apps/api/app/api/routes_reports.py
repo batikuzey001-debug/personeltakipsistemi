@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 from statistics import mean
-from typing import Literal, Dict, List, Tuple, Set
+from typing import Literal, Dict, List, Tuple
 
 from app.deps import get_db, RolesAllowed
 from app.models.events import Event, RawMessage
@@ -78,10 +78,11 @@ def bonus_close_time(
     order: Literal["avg_asc","avg_desc","cnt_desc"] = Query("avg_asc"),
     limit: int = Query(500, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    min_kt: int = Query(5, ge=0, le=1000, description="En az kaç reply_first (KT) olan personel dahil edilsin"),
     db: Session = Depends(get_db),
 ):
     """
-    BONUS departmanı için kişi bazlı rapor.
+    BONUS departmanı için kişi bazlı rapor (+ min_kt filtresi).
     İşlem = close tipleri (reply_close/approve/reject)
     Ø İlk Yanıt = reply_first.ts − kök origin.ts
     Ø Sonuçlandırma = close.ts − kök origin.ts
@@ -126,20 +127,25 @@ def bonus_close_time(
     if not first_rows and not close_rows:
         return []
 
+    # Kişi bazında metrikler + KT sayacı
     root_cache: Dict[Tuple[int,int], datetime | None] = {}
     per_emp_first_secs: Dict[str, List[float]] = {}
     per_emp_close_secs: Dict[str, List[float]] = {}
+    per_emp_first_count: Dict[str, int] = {}
 
     for e in first_rows:
         rts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
-        if not rts: continue
+        if not rts: 
+            continue
         sec = (e.ts - rts).total_seconds()
         if sec >= 0:
             per_emp_first_secs.setdefault(e.employee_id, []).append(sec)
+            per_emp_first_count[e.employee_id] = per_emp_first_count.get(e.employee_id, 0) + 1  # KT++
 
     for e in close_rows:
         rts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
-        if not rts: continue
+        if not rts: 
+            continue
         sec = (e.ts - rts).total_seconds()
         if sec >= 0:
             per_emp_close_secs.setdefault(e.employee_id, []).append(sec)
@@ -147,6 +153,7 @@ def bonus_close_time(
     if not per_emp_close_secs:
         return []
 
+    # Ekip Ø (trend baz)
     team_close_trend_rows: List[Event] = (
         db.query(Event)
         .filter(
@@ -161,7 +168,8 @@ def bonus_close_time(
     team_secs: List[float] = []
     for e in team_close_trend_rows:
         rts = _root_origin_ts(e.chat_id, e.msg_id, db, team_root_cache)
-        if not rts: continue
+        if not rts: 
+            continue
         sec = (e.ts - rts).total_seconds()
         if sec >= 0:
             team_secs.append(sec)
@@ -169,6 +177,11 @@ def bonus_close_time(
 
     rows = []
     for emp_id, close_secs in per_emp_close_secs.items():
+        # KT eşiği
+        kt_cnt = per_emp_first_count.get(emp_id, 0)
+        if min_kt > 0 and kt_cnt < min_kt:
+            continue
+
         full_name, dept = emp_info.get(emp_id, (emp_id, "Bonus"))
         avg_close_sec = mean(close_secs)
         first_secs = per_emp_first_secs.get(emp_id, [])
@@ -211,10 +224,11 @@ def finance_close_time(
     order: Literal["avg_asc","avg_desc","cnt_desc"] = Query("avg_asc"),
     limit: int = Query(500, ge=1, le=500),  # Bonus ile aynı sınırlar
     offset: int = Query(0, ge=0),
+    min_kt: int = Query(5, ge=0, le=1000, description="En az kaç reply_first (KT) olan personel dahil edilsin"),
     db: Session = Depends(get_db),
 ):
     """
-    FINANS kanalı için kişi bazlı rapor (Bonus mantığıyla).
+    FINANS kanalı için kişi bazlı rapor (Bonus mantığıyla + min_kt filtresi).
     - Kanal: Event.source_channel == 'finans'
     - Kişi: employee_id IS NOT NULL
     - Şema: Bonus ile birebir (Row[])
@@ -227,7 +241,7 @@ def finance_close_time(
 
     close_types = ("reply_close", "approve", "reject")
 
-    # İsim/departman lookup (departman zorunlu değil)
+    # İsim/departman lookup
     all_emp_rows = db.query(Employee.employee_id, Employee.full_name, Employee.department).all()
     emp_info: Dict[str, Tuple[str, str]] = {r[0]: (r[1] or r[0], r[2] or "-") for r in all_emp_rows}
 
@@ -252,20 +266,25 @@ def finance_close_time(
     if not first_rows and not close_rows:
         return []
 
+    # Kişi bazında metrikler + KT sayacı
     root_cache: Dict[Tuple[int,int], datetime | None] = {}
     per_emp_first_secs: Dict[str, List[float]] = {}
     per_emp_close_secs: Dict[str, List[float]] = {}
+    per_emp_first_count: Dict[str, int] = {}
 
     for e in first_rows:
         rts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
-        if not rts: continue
+        if not rts: 
+            continue
         sec = (e.ts - rts).total_seconds()
         if sec >= 0:
             per_emp_first_secs.setdefault(e.employee_id, []).append(sec)
+            per_emp_first_count[e.employee_id] = per_emp_first_count.get(e.employee_id, 0) + 1  # KT++
 
     for e in close_rows:
         rts = _root_origin_ts(e.chat_id, e.msg_id, db, root_cache)
-        if not rts: continue
+        if not rts: 
+            continue
         sec = (e.ts - rts).total_seconds()
         if sec >= 0:
             per_emp_close_secs.setdefault(e.employee_id, []).append(sec)
@@ -273,6 +292,7 @@ def finance_close_time(
     if not per_emp_close_secs:
         return []
 
+    # Ekip Ø (trend baz)
     team_close_trend_rows: List[Event] = (
         db.query(Event)
         .filter(
@@ -286,7 +306,8 @@ def finance_close_time(
     team_secs: List[float] = []
     for e in team_close_trend_rows:
         rts = _root_origin_ts(e.chat_id, e.msg_id, db, team_root_cache)
-        if not rts: continue
+        if not rts: 
+            continue
         sec = (e.ts - rts).total_seconds()
         if sec >= 0:
             team_secs.append(sec)
@@ -294,6 +315,11 @@ def finance_close_time(
 
     rows = []
     for emp_id, close_secs in per_emp_close_secs.items():
+        # KT eşiği
+        kt_cnt = per_emp_first_count.get(emp_id, 0)
+        if min_kt > 0 and kt_cnt < min_kt:
+            continue
+
         full_name, dept = emp_info.get(emp_id, (emp_id, "-"))
         avg_close_sec = mean(close_secs)
         first_secs = per_emp_first_secs.get(emp_id, [])
