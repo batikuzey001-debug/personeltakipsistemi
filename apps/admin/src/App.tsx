@@ -11,11 +11,9 @@ import EmployeeDetail from "./pages/EmployeeDetail";
 import EmployeeProfile from "./pages/EmployeeProfile";
 import Layout from "./components/Layout";
 import { RequireRole } from "./lib/auth";
-import ReportBonusClose from "./pages/ReportBonusClose";
-import ReportsFinance from "./pages/ReportsFinance";
-import ReportsDaily from "./pages/ReportsDaily"; // ← YENİ
-import ReportsThreadFeed from "./pages/ReportsThreadFeed"; // ← EKLENDİ
-
+// import ReportBonusClose from "./pages/ReportBonusClose";   // KALDIRILDI
+// import ReportsFinance from "./pages/ReportsFinance";       // KALDIRILDI
+import ReportsDaily from "./pages/ReportsDaily";               // Günlük tek sayfa
 
 function Protected({ children }: { children: React.ReactNode }) {
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
@@ -36,24 +34,15 @@ export default function App() {
       <Route path="/employee-detail" element={<Protected><Layout><EmployeeDetail /></Layout></Protected>} />
       <Route path="/employees/:employee_id" element={<Protected><Layout><EmployeeProfile /></Layout></Protected>} />
 
-      <Route path="/reports/bonus/close-time" element={<Protected><Layout><ReportBonusClose /></Layout></Protected>} />
-      <Route path="/reports/finance/close-time" element={<Protected><Layout><ReportsFinance /></Layout></Protected>} />
-
-      {/* Günlük rapor (kanal toggle) */}
+      {/* Tek rapor sayfası */}
       <Route path="/reports/daily" element={<Protected><Layout><ReportsDaily /></Layout></Protected>} />
+
+      {/* Eski yolları yeni sayfaya yönlendir */}
+      <Route path="/reports/bonus/close-time" element={<Navigate to="/reports/daily" replace />} />
+      <Route path="/reports/finance/close-time" element={<Navigate to="/reports/daily" replace />} />
 
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
-      <Route
-  path="/reports/threads"
-  element={
-    <Protected>
-      <Layout>
-        <ReportsThreadFeed />
-      </Layout>
-    </Protected>
-  }
-/>
     </Routes>
   );
 }
