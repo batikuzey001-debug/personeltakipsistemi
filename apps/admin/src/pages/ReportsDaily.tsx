@@ -26,7 +26,6 @@ function todayYmdLocal(): string {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
-
 function addDays(ymd: string, days: number): string {
   const [y, m, d] = ymd.split("-").map(Number);
   const dt = new Date(y, (m as number) - 1, d + days);
@@ -35,7 +34,6 @@ function addDays(ymd: string, days: number): string {
   const dd = String(dt.getDate()).padStart(2, "0");
   return `${yy}-${mm}-${dd}`;
 }
-
 function fmtMMSS(sec: number | null) {
   if (sec === null || sec === undefined) return "—";
   const s = Math.max(0, Math.round(sec));
@@ -43,7 +41,6 @@ function fmtMMSS(sec: number | null) {
   const r = s % 60;
   return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
 }
-
 async function apiGet<T>(path: string): Promise<T> {
   const token = localStorage.getItem("token") || "";
   const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
@@ -52,12 +49,12 @@ async function apiGet<T>(path: string): Promise<T> {
 }
 
 export default function ReportsDaily() {
-  const [channel, setChannel] = useState<Channel>("finans"); // Neden: Finans’ı sık göreceğiz.
+  const [channel, setChannel] = useState<Channel>("finans");
   const [from, setFrom] = useState<string>(todayYmdLocal());
   const [to, setTo] = useState<string>(addDays(todayYmdLocal(), 1)); // exclusive
   const [order, setOrder] = useState<"avg_asc" | "avg_desc" | "cnt_desc">("cnt_desc");
-  const [minKt, setMinKt] = useState<number>(5); // Neden: KT eşiği default 5 (Finans için)
-  const [onlyDept, setOnlyDept] = useState<boolean>(true); // Neden: Kanal-departman eşleşmesi varsayılan açık
+  const [minKt, setMinKt] = useState<number>(5);
+  const [onlyDept, setOnlyDept] = useState<boolean>(true);
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -70,14 +67,12 @@ export default function ReportsDaily() {
       qs.set("frm", from);
       qs.set("to", to);
       qs.set("order", order);
-      qs.set("limit", "200"); // Neden: hızlı listeleme; gerekirse artırırız.
-      // Finans endpoint’i min_kt destekli, Bonus henüz desteklemeyebilir → yalnız Finans’ta gönder.
-      if (channel === "finans") qs.set("min_kt", String(minKt));
+      qs.set("limit", "200");
+      if (channel === "finans") qs.set("min_kt", String(minKt)); // Bonus da destekliyorsa kaldırmadan her ikisine set edebiliriz.
 
       const path = `/reports/${channel}/close-time?${qs.toString()}`;
       let data = await apiGet<Row[]>(path);
 
-      // Departmana göre son filtre (yalnız ilgili ekip)
       if (onlyDept) {
         const required = channel === "finans" ? "Finans" : "Bonus";
         data = data.filter((r) => (r.department || "").toLowerCase() === required.toLowerCase());
@@ -97,29 +92,16 @@ export default function ReportsDaily() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel]);
 
-  // KPI’lar (ağırlıklı ortalamalar)
   const kpi = useMemo(() => {
     const total = rows.reduce((a, r) => a + (r.count_total || 0), 0);
     const sumClose = rows.reduce((a, r) => a + (r.avg_close_sec || 0) * (r.count_total || 0), 0);
-    const sumFirst = rows.reduce(
-      (a, r) => a + ((r.avg_first_sec ?? 0) * (r.count_total || 0)),
-      0
-    );
+    const sumFirst = rows.reduce((a, r) => a + ((r.avg_first_sec ?? 0) * (r.count_total || 0)), 0);
     const hasFirst = rows.some((r) => r.avg_first_sec != null);
     const wAvgClose = total ? sumClose / total : null;
     const wAvgFirst = total && hasFirst ? sumFirst / total : null;
-
-    // SLA örnek eşiği (sn)
     const SLA = 900;
     const slaBreaches = rows.filter((r) => (r.avg_close_sec || 0) > SLA).length;
-
-    return {
-      total,
-      wAvgClose,
-      wAvgFirst,
-      slaBreaches,
-      slaSec: SLA,
-    };
+    return { total, wAvgClose, wAvgFirst, slaBreaches, slaSec: SLA };
   }, [rows]);
 
   // ----- STYLES -----
@@ -145,11 +127,7 @@ export default function ReportsDaily() {
         }}
         style={bar}
       >
-        <select
-          value={channel}
-          onChange={(e) => setChannel(e.target.value as Channel)}
-          title="Kanal seç"
-        >
+        <select value={channel} onChange={(e) => setChannel(e.target.value as Channel)} title="Kanal seç">
           <option value="finans">Finans</option>
           <option value="bonus">Bonus</option>
         </select>
@@ -163,7 +141,6 @@ export default function ReportsDaily() {
           <option value="avg_desc">Ø Sonuçlandırma (azalan)</option>
         </select>
 
-        {/* Neden: Finans min_kt kuralını destekliyor; Bonus desteklemeyebilir */}
         {channel === "finans" && (
           <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
             min KT
@@ -204,14 +181,15 @@ export default function ReportsDaily() {
         </div>
         <div style={card}>
           <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>Ø Sonuçlandırma</div>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>{fmtMMSS(kpi.wAvgClose ?? null)}</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>{fmtMMSS(kpi.wAvgClose)}</div>
         </div>
         <div style={card}>
           <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>Ø İlk Yanıt</div>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>{fmtMMSS(kpi.wAvgFirst ?? null)}</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>{fmtMMSS(kpi.wAvgFirst)}</div>
         </div>
         <div style={card}>
-          <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>SLA İhlali (>{kpi.slaSec}s)</div>
+          {/* DÜZELTME: ">" karakteri yerine &gt; kaçış karakteri */}
+          <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>SLA İhlali (&gt;{kpi.slaSec}s)</div>
           <div style={{ fontSize: 20, fontWeight: 700 }}>{kpi.slaBreaches}</div>
         </div>
       </div>
