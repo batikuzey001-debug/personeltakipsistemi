@@ -3,11 +3,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta, date
 from typing import Optional
 import requests
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy import and_
 
+from app.db.session import engine
 from app.db.models_admin_tasks import AdminTask, AdminTaskTemplate, TaskStatus
 from app.core.admin_tasks_config import ADMIN_TASKS_TG_CHAT_ID, ADMIN_TASKS_TG_TOKEN, shift_end_dt
+from app.services.admin_settings_service import (
+    get_setting,
+    ADMIN_TASKS_TG_ENABLED_KEY,  # paneldeki “Bot İşlemleri” anahtarı
+)
 
 # ---------------- Core Queries ----------------
 
@@ -69,6 +74,7 @@ def tick_task(db: Session, task_id: int, who: str) -> AdminTask:
 def scan_overdue_and_alert(db: Session, cooldown_min=60) -> int:
     """
     Done=False ve due geçmişse late + cooldown'a göre uyarı (vardiya içi tarama için).
+    Paneldeki Bot İşlemleri anahtarı KAPALIYSA mesaj gönderilmez (durum yine late yapılır).
     """
     now = datetime.utcnow()
     alert_cnt = 0
@@ -85,9 +91,26 @@ def scan_overdue_and_alert(db: Session, cooldown_min=60) -> int:
         _notify_late(t, deadline); alert_cnt += 1
     return alert_cnt
 
-# ---------------- Telegram Helpers ----------------
+# ---------------- Telegram Helpers (panel anahtarına bağlı) ----------------
+
+def _tg_enabled_from_db() -> bool:
+    """
+    Paneldeki 'Bot İşlemleri' sayfasındaki anahtarın durumunu DB'den okur.
+    """
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+    try:
+        val = get_setting(db, ADMIN_TASKS_TG_ENABLED_KEY, "0")
+        return val in ("1", "true", "True")
+    finally:
+        db.close()
 
 def _tg_send(text: str) -> bool:
+    """
+    Tek yerden Telegram gönderimi — panel anahtarı kapalıysa NO-OP.
+    """
+    if not _tg_enabled_from_db():
+        return False
     if not ADMIN_TASKS_TG_TOKEN or not ADMIN_TASKS_TG_CHAT_ID:
         return False
     try:
@@ -114,7 +137,7 @@ def _notify_late(t: AdminTask, deadline: datetime):
 
 def send_summary_report(db: Session, d: date, shift: Optional[str] = None, include_late_list: bool = True) -> bool:
     """
-    Gün/şift özeti (her zaman gönder). Gün sonu için kullanılabilir.
+    Gün/şift özeti (panel anahtarı AÇIKSA gönderilir).
     """
     q = db.query(AdminTask).filter(AdminTask.date == d)
     if shift: q = q.filter(AdminTask.shift == shift)
@@ -146,7 +169,7 @@ def send_summary_report(db: Session, d: date, shift: Optional[str] = None, inclu
 
 def send_shift_end_report_if_pending(db: Session, d: date, shift: str) -> bool:
     """
-    Şift bittiğinde SADECE açık/geciken varsa rapor gönder.
+    Şift bittiğinde SADECE açık/geciken varsa rapor gönder (panel anahtarı AÇIKSA).
     """
     rows = db.query(AdminTask).filter(
         AdminTask.date == d,
@@ -181,6 +204,6 @@ def send_shift_end_report_if_pending(db: Session, d: date, shift: str) -> bool:
 
 def send_day_end_report(db: Session, d: date) -> bool:
     """
-    Gün sonu raporu (her zaman gönderilir).
+    Gün sonu raporu (panel anahtarı AÇIKSA gönderilir).
     """
     return send_summary_report(db, d, shift=None, include_late_list=True)
