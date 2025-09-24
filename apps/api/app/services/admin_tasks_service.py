@@ -97,3 +97,43 @@ def _notify_late(t: AdminTask, deadline: datetime):
         )
     except Exception:
         pass
+
+def send_summary_report(db: Session, d: date, shift: Optional[str]=None, include_late_list: bool=True) -> bool:
+    """Bugüne/şifte göre özet Telegram raporu gönderir."""
+    if not ADMIN_TASKS_TG_TOKEN or not ADMIN_TASKS_TG_CHAT_ID:
+        return False
+    q = db.query(AdminTask).filter(AdminTask.date==d)
+    if shift:
+        q = q.filter(AdminTask.shift==shift)
+    rows = q.all()
+    total = len(rows)
+    done = sum(1 for r in rows if r.status == TaskStatus.done)
+    late = sum(1 for r in rows if r.status == TaskStatus.late)
+    pending = total - done - late
+    d_str = d.strftime("%d.%m.%Y")
+    title = f"📣 ADMIN GÖREV RAPORU — {d_str}" + (f" • {shift}" if shift else "")
+    lines = [
+        title,
+        f"• 🗂️ Toplam: {total}",
+        f"• ✅ Tamamlanan: {done}",
+        f"• ❌ Geciken: {late}",
+        f"• ⏳ Beklemede: {pending}",
+    ]
+    if include_late_list and late:
+        lines.append("")
+        lines.append("Gecikenler:")
+        for r in rows:
+            if r.status == TaskStatus.late:
+                who = r.assignee_employee_id or "-"
+                sh = r.shift or "-"
+                lines.append(f"• [{sh}] {r.title} — {who}")
+    text = "\n".join(lines)
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{ADMIN_TASKS_TG_TOKEN}/sendMessage",
+            json={"chat_id": int(ADMIN_TASKS_TG_CHAT_ID), "text": text},
+            timeout=5,
+        )
+        return True
+    except Exception:
+        return False
