@@ -25,9 +25,10 @@ export default function AdminTasks() {
   const [rows, setRows] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string|null>(null);
+  const [msg, setMsg] = useState<string>("");
 
   async function load() {
-    setErr(null); setLoading(true);
+    setErr(null); setMsg(""); setLoading(true);
     try{
       const qs = new URLSearchParams();
       if (date) qs.set("d", date);
@@ -51,8 +52,21 @@ export default function AdminTasks() {
   }
 
   async function scanOverdue() {
-    await api(`/admin-tasks/scan-overdue`, { method:"POST" });
+    const r = await api<{alerts:number}>(`/admin-tasks/scan-overdue`, { method:"POST" });
+    setMsg(`Gecikme tarandı: ${r.alerts} uyarı gönderildi.`);
     await load();
+  }
+
+  // ← YENİ: Telegram rapor gönder
+  async function sendReport() {
+    setErr(""); setMsg("");
+    try {
+      const body = { d: date || undefined, shift: shift || undefined, include_late_list: true };
+      await api(`/admin-tasks/report`, { method:"POST", body: JSON.stringify(body) });
+      setMsg("Telegram raporu gönderildi.");
+    } catch(e:any) {
+      setErr(e?.message || "Rapor gönderilemedi");
+    }
   }
 
   useEffect(()=>{ load(); /* eslint-disable-next-line */ }, []);
@@ -78,7 +92,9 @@ export default function AdminTasks() {
         <button type="submit" disabled={loading}>{loading ? "Yükleniyor…" : "Listele"}</button>
         <button type="button" onClick={generateToday}>Bugünü Oluştur</button>
         <button type="button" onClick={scanOverdue}>Gecikmeleri Tara</button>
+        <button type="button" onClick={sendReport}>Telegram’a Rapor Gönder</button> {/* ← YENİ */}
         {err && <span style={{ color:"#b00020", fontSize:12 }}>{err}</span>}
+        {msg && <span style={{ color:"#1b6f1b", fontSize:12 }}>{msg}</span>}
       </form>
 
       <div style={{ border:"1px solid #e9e9e9", borderRadius:12, overflow:"hidden", background:"#fff" }}>
