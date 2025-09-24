@@ -1,10 +1,10 @@
 # apps/api/app/services/admin_tasks_service.py
 from __future__ import annotations
 from datetime import datetime, timedelta, date
-from typing import List, Optional
+from typing import Optional
 import requests
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import and_
 from app.db.models_admin_tasks import AdminTask, AdminTaskTemplate, TaskStatus
 from app.core.admin_tasks_config import ADMIN_TASKS_TG_CHAT_ID, ADMIN_TASKS_TG_TOKEN, IST, shift_end_dt
 
@@ -19,11 +19,13 @@ def create_from_templates_for_day(db: Session, d: date) -> int:
     tpls = db.query(AdminTaskTemplate).filter(AdminTaskTemplate.is_active==True).all()
     created = 0
     for t in tpls:
-        exist = db.query(AdminTask).filter(and_(AdminTask.date==d, AdminTask.title==t.title, AdminTask.shift==t.shift)).first()
+        exist = db.query(AdminTask).filter(
+            and_(AdminTask.date==d, AdminTask.title==t.title, AdminTask.shift==t.shift)
+        ).first()
         if exist: continue
         due_ts = None
         if t.shift:
-            due_ts = shift_end_dt(IST.localize(datetime(d.year,d.month,d.day)).date(), t.shift)
+            due_ts = shift_end_dt(IST.localize(datetime(d.year, d.month, d.day)), t.shift)
         task = AdminTask(
             date=d, shift=t.shift, title=t.title, department=t.department,
             assignee_employee_id=t.default_assignee, due_ts=due_ts,
@@ -40,7 +42,7 @@ def tick_task(db: Session, task_id: int, who: str) -> AdminTask:
     t.is_done = True
     t.done_at = now
     t.done_by = who
-    # geçikme
+    # geçikme kontrolü
     is_late = False
     if t.due_ts:
         deadline = t.due_ts + timedelta(minutes=t.grace_min or 0)
@@ -65,14 +67,11 @@ def _notify_done(t: AdminTask):
 def scan_overdue_and_alert(db: Session, cooldown_min=60) -> int:
     now = datetime.utcnow()
     alert_cnt = 0
-    tasks = db.query(AdminTask).filter(and_(
-        AdminTask.is_done==False,
-        AdminTask.due_ts.isnot(None),
-    )).all()
-    for t in tasks:
+    rows = db.query(AdminTask).filter(AdminTask.is_done==False, AdminTask.due_ts.isnot(None)).all()
+    for t in rows:
         deadline = (t.due_ts or now) + timedelta(minutes=t.grace_min or 0)
         if now <= deadline: continue
-        # spam koruma
+        # cooldown
         if t.last_alert_at and (now - t.last_alert_at) < timedelta(minutes=cooldown_min):
             continue
         t.status = TaskStatus.late
@@ -85,7 +84,12 @@ def scan_overdue_and_alert(db: Session, cooldown_min=60) -> int:
 def _notify_late(t: AdminTask, deadline: datetime):
     if not ADMIN_TASKS_TG_TOKEN or not ADMIN_TASKS_TG_CHAT_ID: return
     try:
-        text = f"⏰ Geciken Görev\n📌 {t.title}\n👤 {t.assignee_employee_id or '-'}\n🕒 Bitiş: {deadline.isoformat(timespec='minutes')}Z"
+        text = (
+            "⏰ Geciken Görev\n"
+            f"📌 {t.title}\n"
+            f"👤 {t.assignee_employee_id or '-'}\n"
+            f"🕒 Bitiş: {deadline.isoformat(timespec='minutes')}Z"
+        )
         requests.post(
             f"https://api.telegram.org/bot{ADMIN_TASKS_TG_TOKEN}/sendMessage",
             json={"chat_id": int(ADMIN_TASKS_TG_CHAT_ID), "text": text},
