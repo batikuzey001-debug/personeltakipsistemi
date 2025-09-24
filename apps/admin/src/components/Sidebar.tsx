@@ -22,7 +22,8 @@ export default function Sidebar() {
 
   const adminOnly = [
     { to: "/reports/daily", label: "Rapor • Günlük (Bonus/Finans)" },
-    { to: "/admin/tasks", label: "Admin Görevleri" },      // ← EKLENDİ
+    { to: "/admin/tasks", label: "Admin Görevleri" },
+    { to: "/admin/tasks/templates", label: "Görev Şablonları" }, // ← EKLENDİ
     { to: "/identities", label: "Kişi Eşleştirme" },
     { to: "/users", label: "Kullanıcılar" },
   ];
