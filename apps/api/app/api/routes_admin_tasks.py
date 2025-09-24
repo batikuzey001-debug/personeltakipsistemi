@@ -69,3 +69,41 @@ def send_report(body: ReportIn, db: Session = Depends(get_db)):
     if not sent:
         raise HTTPException(status_code=400, detail="report not sent (check token/chat id or no data)")
     return {"ok": True, "date": _d.isoformat(), "shift": body.shift or None}
+
+# apps/api/app/api/routes_admin_tasks.py  (altına ekle)
+from app.db.models_admin_tasks import AdminTaskTemplate
+
+class BulkTemplatesIn(BaseModel):
+    shift: str                      # "Sabah" | "Öğlen" | "Akşam" | "Gece"
+    department: str = "Admin"       # varsayılan Admin
+    titles: list[str]               # her satır bir başlık
+    is_active: bool = True
+    repeat: str = "daily"           # sabit günlük
+
+@router.post("/templates/bulk", dependencies=[Depends(RolesAllowed("super_admin","admin"))])
+def bulk_create_templates(body: BulkTemplatesIn, db: Session = Depends(get_db)):
+    created = 0
+    for title in body.titles:
+        t = (title or "").strip()
+        if not t:
+            continue
+        # aynı shift+title varsa atla
+        exists = db.query(AdminTaskTemplate).filter(
+            AdminTaskTemplate.title == t,
+            AdminTaskTemplate.shift == body.shift
+        ).first()
+        if exists:
+            continue
+        tpl = AdminTaskTemplate(
+            title=t,
+            department=body.department,
+            shift=body.shift,
+            repeat=body.repeat,
+            grace_min=0,
+            default_assignee=None,
+            notes=None,
+            is_active=body.is_active
+        )
+        db.add(tpl); created += 1
+    db.commit()
+    return {"created": created}
