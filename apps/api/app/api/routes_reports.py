@@ -350,3 +350,192 @@ def finance_close_time(
         rows.sort(key=lambda r: (r["avg_close_sec"], -r["count_total"]))
 
     return rows[offset: offset + limit]
+
+
+# apps/api/app/api/routes_reports.py
+# ... (dosyanızın mevcut içeriği aynen kalsın; bu bloğu en alta ekleyin) ...
+
+from sqlalchemy import func
+
+CloseTypes = ("approve", "reply_close", "reject")
+
+def _threads_core(
+    db: Session,
+    channel: Literal["bonus", "finans"],
+    frm: str | None,
+    to: str | None,
+    order: Literal["close_desc","close_asc","dur_asc","dur_desc"] = "close_desc",
+    limit: int = 200,
+    offset: int = 0,
+    sla_sec: int = 900,
+):
+    """
+    Thread bazlı rapor çekirdeği:
+    - Aralık: KAPANIŞ tarihine göre (frm ≤ first_close_ts < to)
+    - İlk kapanışı yapan kişi/close_type döner
+    - Süreler: origin→first_reply ve origin→first_close
+    """
+    # Tarih aralığı (UTC)
+    dt_to = _parse_date(to) or (datetime.now(timezone.utc) + timedelta(days=1))
+    dt_from = _parse_date(frm) or (dt_to - timedelta(days=1))  # varsayılan: bugün
+
+    # 1) Bu aralıkta KAPANAN thread'leri yakala (ilk kapanış)
+    close_rows = (
+        db.query(
+            Event.correlation_id.label("corr"),
+            Event.employee_id.label("closer_emp"),
+            Event.type.label("close_type"),
+            Event.ts.label("close_ts"),
+            Event.chat_id.label("close_chat_id"),
+            Event.msg_id.label("close_msg_id"),
+        )
+        .filter(
+            Event.source_channel == channel,
+            Event.type.in_(CloseTypes),
+            Event.ts >= dt_from,
+            Event.ts < dt_to,
+        )
+        .order_by(Event.correlation_id.asc(), Event.ts.asc())
+        .all()
+    )
+
+    if not close_rows:
+        return []
+
+    # İlk kapanışları seç (corr başına ilk kayıt)
+    first_close_by_corr: Dict[str, Dict] = {}
+    for r in close_rows:
+        c = r.corr
+        if c not in first_close_by_corr:
+            first_close_by_corr[c] = {
+                "corr": c,
+                "first_close_ts": r.close_ts,
+                "close_type": r.close_type,
+                "closer_emp": r.closer_emp,
+                "close_chat_id": r.close_chat_id,
+                "close_msg_id": r.close_msg_id,
+            }
+
+    corrs = list(first_close_by_corr.keys())
+
+    # 2) Origin MIN(ts) (corr bazında)
+    origin_rows = (
+        db.query(
+            Event.correlation_id.label("corr"),
+            func.min(Event.ts).label("origin_ts"),
+        )
+        .filter(
+            Event.source_channel == channel,
+            Event.type == "origin",
+            Event.correlation_id.in_(corrs),
+        )
+        .group_by(Event.correlation_id)
+        .all()
+    )
+    origin_by_corr = {r.corr: r.origin_ts for r in origin_rows}
+
+    # 3) First reply MIN(ts) (corr bazında)
+    first_rows = (
+        db.query(
+            Event.correlation_id.label("corr"),
+            func.min(Event.ts).label("first_reply_ts"),
+        )
+        .filter(
+            Event.source_channel == channel,
+            Event.type == "reply_first",
+            Event.correlation_id.in_(corrs),
+        )
+        .group_by(Event.correlation_id)
+        .all()
+    )
+    first_by_corr = {r.corr: r.first_reply_ts for r in first_rows}
+
+    # 4) Personel isim/department lookup (tek sefer)
+    emp_lookup = {
+        e.employee_id: (e.full_name or e.employee_id, e.department or "-")
+        for e in db.query(Employee.employee_id, Employee.full_name, Employee.department).all()
+    }
+
+    # 5) Satırları kur
+    rows = []
+    for corr, fc in first_close_by_corr.items():
+        origin_ts = origin_by_corr.get(corr)
+        if not origin_ts:
+            # origin yoksa süreleri hesaplayamayız; yine de satır döndürelim mi? -> Atlıyoruz.
+            continue
+
+        first_reply_ts = first_by_corr.get(corr)
+        first_close_ts = fc["first_close_ts"]
+
+        first_resp = (first_reply_ts - origin_ts).total_seconds() if first_reply_ts else None
+        close_dur = (first_close_ts - origin_ts).total_seconds() if first_close_ts else None
+
+        emp_id = fc["closer_emp"]
+        full_name, dept = emp_lookup.get(emp_id, (emp_id or "-", "-"))
+
+        rows.append({
+            "corr": corr,
+            "origin_ts": origin_ts,
+            "first_reply_ts": first_reply_ts,
+            "first_close_ts": first_close_ts,
+            "close_type": fc["close_type"],
+            "closer_employee_id": emp_id,
+            "closer_full_name": full_name,
+            "closer_department": dept,
+            "first_response_sec": int(first_resp) if first_resp is not None and first_resp >= 0 else None,
+            "close_sec": int(close_dur) if close_dur is not None and close_dur >= 0 else None,
+            "sla_breach": (close_dur is not None and close_dur > sla_sec),
+            "close_chat_id": fc["close_chat_id"],
+            "close_msg_id": fc["close_msg_id"],
+        })
+
+    # 6) Sıralama
+    if order == "close_asc":
+        rows.sort(key=lambda r: (r["first_close_ts"] or datetime.max))
+    elif order == "dur_asc":
+        rows.sort(key=lambda r: (r["close_sec"] if r["close_sec"] is not None else 10**12))
+    elif order == "dur_desc":
+        rows.sort(key=lambda r: (r["close_sec"] if r["close_sec"] is not None else -1), reverse=True)
+    else:  # close_desc
+        rows.sort(key=lambda r: (r["first_close_ts"] or datetime.min), reverse=True)
+
+    return rows[offset: offset + limit]
+
+# ---------- THREAD RAPORLARI ----------
+@router.get(
+    "/finance/threads",
+    dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))],
+)
+def finance_threads(
+    frm: str | None = Query(None, description="YYYY-MM-DD (default: bugün)"),
+    to: str | None = Query(None, description="YYYY-MM-DD (exclusive)"),
+    order: Literal["close_desc","close_asc","dur_asc","dur_desc"] = Query("close_desc"),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    sla_sec: int = Query(900, ge=1, le=86400, description="SLA eşiği (sn)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Finans kanalı — thread bazlı günlük rapor.
+    Kapanışa göre aralık; ilk kapanış & süreler & kişi bilgisi.
+    """
+    return _threads_core(db, "finans", frm, to, order, limit, offset, sla_sec)
+
+@router.get(
+    "/bonus/threads",
+    dependencies=[Depends(RolesAllowed("super_admin","admin","manager"))],
+)
+def bonus_threads(
+    frm: str | None = Query(None, description="YYYY-MM-DD (default: bugün)"),
+    to: str | None = Query(None, description="YYYY-MM-DD (exclusive)"),
+    order: Literal["close_desc","close_asc","dur_asc","dur_desc"] = Query("close_desc"),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    sla_sec: int = Query(900, ge=1, le=86400, description="SLA eşiği (sn)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Bonus kanalı — thread bazlı günlük rapor.
+    Kapanışa göre aralık; ilk kapanış & süreler & kişi bilgisi.
+    """
+    return _threads_core(db, "bonus", frm, to, order, limit, offset, sla_sec)
