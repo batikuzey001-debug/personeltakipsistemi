@@ -14,6 +14,8 @@ import { RequireRole } from "./lib/auth";
 import ReportBonusClose from "./pages/ReportBonusClose";
 import ReportsFinance from "./pages/ReportsFinance";
 import ReportsDaily from "./pages/ReportsDaily"; // ← YENİ
+import ReportsThreadFeed from "./pages/ReportsThreadFeed"; // ← EKLENDİ
+
 
 function Protected({ children }: { children: React.ReactNode }) {
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
@@ -42,6 +44,16 @@ export default function App() {
 
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      <Route
+  path="/reports/threads"
+  element={
+    <Protected>
+      <Layout>
+        <ReportsThreadFeed />
+      </Layout>
+    </Protected>
+  }
+/>
     </Routes>
   );
 }
