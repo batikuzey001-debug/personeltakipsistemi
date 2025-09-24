@@ -14,7 +14,8 @@ import { RequireRole } from "./lib/auth";
 import ReportsDaily from "./pages/ReportsDaily";
 import AdminTasks from "./pages/AdminTasks";
 import AdminTaskTemplates from "./pages/AdminTaskTemplates";
-import AdminBotSettings from "./pages/AdminBotSettings";   // ← EKLENDİ
+import AdminBotSettings from "./pages/AdminBotSettings";     // Bot İşlemleri
+import Notifications from "./pages/Notifications";           // ← Bildirim Yönetimi (manuel + şablonlar)
 
 function Protected({ children }: { children: React.ReactNode }) {
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
@@ -42,8 +43,9 @@ export default function App() {
       <Route path="/admin/tasks" element={<Protected><Layout><AdminTasks /></Layout></Protected>} />
       <Route path="/admin/tasks/templates" element={<Protected><Layout><AdminTaskTemplates /></Layout></Protected>} />
 
-      {/* Bot İşlemleri */}
-      <Route path="/admin/bot" element={<Protected><Layout><AdminBotSettings /></Layout></Protected>} />  {/* ← EKLENDİ */}
+      {/* Bot İşlemleri & Bildirim Yönetimi */}
+      <Route path="/admin/bot" element={<Protected><Layout><AdminBotSettings /></Layout></Protected>} />
+      <Route path="/admin/notifications" element={<Protected><Layout><Notifications /></Layout></Protected>} />
 
       {/* Eski yolları yeni sayfaya yönlendir */}
       <Route path="/reports/bonus/close-time" element={<Navigate to="/reports/daily" replace />} />
