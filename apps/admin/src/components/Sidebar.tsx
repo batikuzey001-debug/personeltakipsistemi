@@ -20,17 +20,27 @@ export default function Sidebar() {
     { to: "/employees", label: "Personeller" },
   ];
 
-  // Sadece TEK rapor sayfası: Günlük (içinde sekmeler olacak)
   const adminOnly = [
-    { to: "/identities", label: "Kişi Eşleştirme" },
     { to: "/reports/daily", label: "Rapor • Günlük (Bonus/Finans)" },
+    { to: "/admin/tasks", label: "Admin Görevleri" },      // ← EKLENDİ
+    { to: "/identities", label: "Kişi Eşleştirme" },
     { to: "/users", label: "Kullanıcılar" },
   ];
 
   const items = auth.role === "super_admin" ? [...base, ...adminOnly] : base;
 
   return (
-    <aside style={{ width: 220, borderRight: "1px solid #eee", padding: 12, boxSizing: "border-box", height: "100%", overflowY: "auto", background: "#fff" }}>
+    <aside
+      style={{
+        width: 220,
+        borderRight: "1px solid #eee",
+        padding: 12,
+        boxSizing: "border-box",
+        height: "100%",
+        overflowY: "auto",
+        background: "#fff",
+      }}
+    >
       <nav>
         {items.map((i) => (
           <NavLink
