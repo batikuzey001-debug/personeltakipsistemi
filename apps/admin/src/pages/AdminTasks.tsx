@@ -29,17 +29,23 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await r.json()) as T;
 }
 
-// IST format yardımcıları
+// IST format yardımcıları (tüm saatler Europe/Istanbul'a zorlanır)
 const IST_TZ = "Europe/Istanbul";
-const fmtISTDateTime = (ts?: string | null) =>
-  ts ? new Intl.DateTimeFormat("tr-TR", { timeZone: IST_TZ, dateStyle: "short", timeStyle: "short" }).format(new Date(ts)) : "—";
 const fmtISTTime = (ts?: string | null) =>
-  ts ? new Intl.DateTimeFormat("tr-TR", { timeZone: IST_TZ, hour: "2-digit", minute: "2-digit" }).format(new Date(ts)) : "—";
+  ts
+    ? new Intl.DateTimeFormat("tr-TR", {
+        timeZone: IST_TZ,
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(ts))
+    : "—";
 
 function ymdIST() {
-  // Görüntü açısından yerel tarayıcı tarihi yeterli; API IST bugünü defaultluyor
+  // Görsel filtre için tarayıcı günü yeterli; API d yoksa IST bugünü defaultluyor
   const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
 }
 
 export default function AdminTasks() {
@@ -170,7 +176,7 @@ export default function AdminTasks() {
     <div style={container}>
       <h1 style={{ margin: 0, fontSize: 20 }}>Admin Görevleri</h1>
 
-      {/* Filtre barı — sade: Bugünü Oluştur & Gecikmeleri Tara kaldırıldı */}
+      {/* Filtre barı — sade */}
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -241,7 +247,11 @@ export default function AdminTasks() {
                       <div style={chip(r.status)}>
                         {r.status === "done" ? "Tamamlandı" : r.status === "late" ? "Gecikmiş" : "Açık"}
                       </div>
-                      {r.done_at && <div style={{ marginTop: 4, ...muted }}>İşaretlenme: {fmtISTTime(r.done_at)}</div>}
+                      {r.done_at && (
+                        <div style={{ marginTop: 4, ...muted }}>
+                          İşaretlenme: {fmtISTTime(r.done_at)}
+                        </div>
+                      )}
                     </div>
 
                     <div style={muted}>Bitiş: {fmtISTTime(r.due_ts)}</div>
