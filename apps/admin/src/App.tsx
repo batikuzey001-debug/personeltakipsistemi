@@ -15,6 +15,8 @@ import { RequireRole } from "./lib/auth";
 // import ReportsFinance from "./pages/ReportsFinance";       // KALDIRILDI
 import ReportsDaily from "./pages/ReportsDaily";               // Günlük tek sayfa
 import AdminTasks from "./pages/AdminTasks";                   // ← EKLENDİ
+import AdminTaskTemplates from "./pages/AdminTaskTemplates";
+
 
 function Protected({ children }: { children: React.ReactNode }) {
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
@@ -47,6 +49,7 @@ export default function App() {
 
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/admin/tasks/templates" element={<Protected><Layout><AdminTaskTemplates /></Layout></Protected>} />
     </Routes>
   );
 }
