@@ -11,12 +11,10 @@ import EmployeeDetail from "./pages/EmployeeDetail";
 import EmployeeProfile from "./pages/EmployeeProfile";
 import Layout from "./components/Layout";
 import { RequireRole } from "./lib/auth";
-// import ReportBonusClose from "./pages/ReportBonusClose";   // KALDIRILDI
-// import ReportsFinance from "./pages/ReportsFinance";       // KALDIRILDI
-import ReportsDaily from "./pages/ReportsDaily";               // Günlük tek sayfa
-import AdminTasks from "./pages/AdminTasks";                   // ← EKLENDİ
+import ReportsDaily from "./pages/ReportsDaily";
+import AdminTasks from "./pages/AdminTasks";
 import AdminTaskTemplates from "./pages/AdminTaskTemplates";
-
+import AdminBotSettings from "./pages/AdminBotSettings";   // ← EKLENDİ
 
 function Protected({ children }: { children: React.ReactNode }) {
   return <RequireRole roles={["super_admin"]}>{children}</RequireRole>;
@@ -41,7 +39,11 @@ export default function App() {
       <Route path="/reports/daily" element={<Protected><Layout><ReportsDaily /></Layout></Protected>} />
 
       {/* Admin Görevleri */}
-      <Route path="/admin/tasks" element={<Protected><Layout><AdminTasks /></Layout></Protected>} />  {/* ← EKLENDİ */}
+      <Route path="/admin/tasks" element={<Protected><Layout><AdminTasks /></Layout></Protected>} />
+      <Route path="/admin/tasks/templates" element={<Protected><Layout><AdminTaskTemplates /></Layout></Protected>} />
+
+      {/* Bot İşlemleri */}
+      <Route path="/admin/bot" element={<Protected><Layout><AdminBotSettings /></Layout></Protected>} />  {/* ← EKLENDİ */}
 
       {/* Eski yolları yeni sayfaya yönlendir */}
       <Route path="/reports/bonus/close-time" element={<Navigate to="/reports/daily" replace />} />
@@ -49,7 +51,6 @@ export default function App() {
 
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
-      <Route path="/admin/tasks/templates" element={<Protected><Layout><AdminTaskTemplates /></Layout></Protected>} />
     </Routes>
   );
 }
