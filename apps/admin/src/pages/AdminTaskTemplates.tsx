@@ -1,4 +1,4 @@
-// apps/admin/src/pages/AdminTaskTemplates.tsx
+// apps/admin/src/pages/AdminTaskTemplates.tsx  (GRACE alanını kaldır + toplu ekleme bölümü ekle)
 import React, { useEffect, useState } from "react";
 
 const API = (import.meta.env.VITE_API_BASE_URL as string) || "https://personel-takip-api-production.up.railway.app";
@@ -7,15 +7,14 @@ type Template = {
   id: number;
   title: string;
   department?: string | null;
-  shift?: string | null;            // Sabah/Öğlen/Akşam/Gece | null
-  repeat: string;                   // daily/weekly/shift/once
-  grace_min: number;
-  default_assignee?: string | null; // employee_id
+  shift?: string | null;
+  repeat: string;
+  grace_min: number; // backend'te 0, UI'da göstermiyoruz
+  default_assignee?: string | null;
   notes?: string | null;
   is_active: boolean;
 };
-
-type TemplateIn = Omit<Template, "id">;
+type TemplateIn = Omit<Template, "id" | "grace_min"> & { grace_min?: number };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem("token") || "";
@@ -42,7 +41,6 @@ export default function AdminTaskTemplates() {
     department: "",
     shift: "",
     repeat: "daily",
-    grace_min: 0,
     default_assignee: "",
     notes: "",
     is_active: true,
@@ -50,6 +48,11 @@ export default function AdminTaskTemplates() {
   const [form, setForm] = useState<TemplateIn>(emptyForm);
   const [editId, setEditId] = useState<number | null>(null);
   const [msg, setMsg] = useState<string>("");
+
+  // Toplu ekleme
+  const [bulkShift, setBulkShift] = useState<string>("Sabah");
+  const [bulkDept, setBulkDept] = useState<string>("Admin");
+  const [bulkTitles, setBulkTitles] = useState<string>(""); // her satır bir görev
 
   async function load() {
     setErr(null); setLoading(true);
@@ -64,7 +67,6 @@ export default function AdminTaskTemplates() {
       setLoading(false);
     }
   }
-
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [activeFilter]);
 
   async function save() {
@@ -75,6 +77,7 @@ export default function AdminTaskTemplates() {
       shift: form.shift || null,
       default_assignee: form.default_assignee || null,
       notes: form.notes || null,
+      grace_min: 0,
     };
     try {
       if (editId) {
@@ -110,7 +113,6 @@ export default function AdminTaskTemplates() {
       setErr(e?.message || "Aktif/Pasif değiştirilemedi");
     }
   }
-
   async function remove(id: number) {
     if (!confirm("Şablon silinsin mi?")) return;
     setErr(null); setMsg("");
@@ -121,7 +123,6 @@ export default function AdminTaskTemplates() {
       setErr(e?.message || "Silme hatası");
     }
   }
-
   function startEdit(t: Template) {
     setEditId(t.id);
     setForm({
@@ -129,22 +130,34 @@ export default function AdminTaskTemplates() {
       department: t.department || "",
       shift: t.shift || "",
       repeat: t.repeat,
-      grace_min: t.grace_min,
       default_assignee: t.default_assignee || "",
       notes: t.notes || "",
       is_active: t.is_active,
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
+  function cancelEdit() { setEditId(null); setForm(emptyForm); }
 
-  function cancelEdit() {
-    setEditId(null);
-    setForm(emptyForm);
+  async function bulkCreate() {
+    setErr(null); setMsg("");
+    const titles = bulkTitles.split("\n").map(s => s.trim()).filter(Boolean);
+    if (!titles.length) { setErr("Başlık listesi boş"); return; }
+    try {
+      const r = await api<{created:number}>(`/admin-tasks/templates/bulk`, {
+        method: "POST",
+        body: JSON.stringify({ shift: bulkShift, department: bulkDept, titles, is_active: true, repeat: "daily" }),
+      });
+      setMsg(`${r.created} şablon eklendi.`);
+      setBulkTitles("");
+      await load();
+    } catch (e:any) {
+      setErr(e?.message || "Toplu ekleme hatası");
+    }
   }
 
   // styles
   const container: React.CSSProperties = { maxWidth: 1200, margin: "0 auto", padding: 12, display: "grid", gap: 12 };
-  const grid: React.CSSProperties = { display: "grid", gridTemplateColumns: "380px 1fr", gap: 12 };
+  const grid: React.CSSProperties = { display: "grid", gridTemplateColumns: "420px 1fr", gap: 12 };
   const card: React.CSSProperties = { border: "1px solid #e9e9e9", borderRadius: 12, background: "#fff", padding: 12 };
   const tableCard: React.CSSProperties = { border: "1px solid #e9e9e9", borderRadius: 12, background: "#fff", overflow: "hidden" };
   const th: React.CSSProperties = { padding: "6px 10px", fontWeight: 600, borderBottom: "1px solid #eee", background: "#fff", position: "sticky", top: 0, whiteSpace: "nowrap" };
@@ -155,62 +168,76 @@ export default function AdminTaskTemplates() {
       <h1 style={{ margin: 0, fontSize: 20 }}>Görev Şablonları</h1>
 
       <div style={grid}>
-        {/* Form */}
-        <div style={card}>
-          <div style={{ display: "grid", gap: 8 }}>
-            <label>
-              <div>Görev Başlığı</div>
-              <input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Örn: Çekim Kontrol" />
-            </label>
-
-            <label>
-              <div>Departman</div>
-              <select value={form.department || ""} onChange={e => setForm({ ...form, department: e.target.value || "" })}>
-                {DEPTS.map(d => <option key={d} value={d}>{d || "—"}</option>)}
-              </select>
-            </label>
-
-            <label>
-              <div>Vardiya</div>
-              <select value={form.shift || ""} onChange={e => setForm({ ...form, shift: e.target.value || "" })}>
-                {SHIFTS.map(s => <option key={s} value={s}>{s || "—"}</option>)}
-              </select>
-            </label>
-
-            <label>
-              <div>Tekrar</div>
-              <select value={form.repeat} onChange={e => setForm({ ...form, repeat: e.target.value })}>
-                {REPEATS.map(r => <option key={r} value={r}>{r}</option>)}
-              </select>
-            </label>
-
-            <label>
-              <div>Müsaade (dk)</div>
-              <input type="number" min={0} value={form.grace_min} onChange={e => setForm({ ...form, grace_min: Math.max(0, Number(e.target.value || 0)) })} />
-            </label>
-
-            <label>
-              <div>Varsayılan Atanan (employee_id)</div>
-              <input value={form.default_assignee || ""} onChange={e => setForm({ ...form, default_assignee: e.target.value })} placeholder="RD-0xx" />
-            </label>
-
-            <label>
-              <div>Not</div>
-              <textarea rows={3} value={form.notes || ""} onChange={e => setForm({ ...form, notes: e.target.value })} />
-            </label>
-
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <input type="checkbox" checked={form.is_active} onChange={e => setForm({ ...form, is_active: e.target.checked })} />
-              Aktif
-            </label>
-
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={save} disabled={!form.title.trim()}>{editId ? "Güncelle" : "Ekle"}</button>
-              {editId && <button type="button" onClick={cancelEdit}>İptal</button>}
+        {/* Form + Toplu Ekleme */}
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={card}>
+            <h3 style={{ marginTop: 0 }}>Yeni / Düzenle</h3>
+            <div style={{ display: "grid", gap: 8 }}>
+              <label>
+                <div>Görev Başlığı</div>
+                <input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Örn: Çekim Kontrol" />
+              </label>
+              <label>
+                <div>Departman</div>
+                <select value={form.department || ""} onChange={e => setForm({ ...form, department: e.target.value || "" })}>
+                  {DEPTS.map(d => <option key={d} value={d}>{d || "—"}</option>)}
+                </select>
+              </label>
+              <label>
+                <div>Vardiya</div>
+                <select value={form.shift || ""} onChange={e => setForm({ ...form, shift: e.target.value || "" })}>
+                  {SHIFTS.map(s => <option key={s} value={s}>{s || "—"}</option>)}
+                </select>
+              </label>
+              <label>
+                <div>Tekrar</div>
+                <select value={form.repeat} onChange={e => setForm({ ...form, repeat: e.target.value })}>
+                  {REPEATS.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </label>
+              <label>
+                <div>Varsayılan Atanan (employee_id)</div>
+                <input value={form.default_assignee || ""} onChange={e => setForm({ ...form, default_assignee: e.target.value })} placeholder="RD-0xx" />
+              </label>
+              <label>
+                <div>Not</div>
+                <textarea rows={3} value={form.notes || ""} onChange={e => setForm({ ...form, notes: e.target.value })} />
+              </label>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={form.is_active} onChange={e => setForm({ ...form, is_active: e.target.checked })} />
+                Aktif
+              </label>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={save} disabled={!form.title.trim()}>{editId ? "Güncelle" : "Ekle"}</button>
+                {editId && <button type="button" onClick={cancelEdit}>İptal</button>}
+              </div>
+              {err && <div style={{ color: "#b00020", fontSize: 12 }}>{err}</div>}
+              {!err && msg && <div style={{ color: "#1b6f1b", fontSize: 12 }}>{msg}</div>}
             </div>
+          </div>
 
-            {err && <div style={{ color: "#b00020", fontSize: 12 }}>{err}</div>}
-            {!err && msg && <div style={{ color: "#1b6f1b", fontSize: 12 }}>{msg}</div>}
+          <div style={card}>
+            <h3 style={{ marginTop: 0 }}>Toplu Ekle (Vardiyaya)</h3>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+              <label>Vardiya&nbsp;
+                <select value={bulkShift} onChange={e => setBulkShift(e.target.value)}>
+                  {["Sabah","Öğlen","Akşam","Gece"].map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
+              <label>Departman&nbsp;
+                <select value={bulkDept} onChange={e => setBulkDept(e.target.value)}>
+                  {["Admin","Finans","Bonus","LC"].map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </label>
+              <button type="button" onClick={bulkCreate}>Ekle</button>
+            </div>
+            <textarea
+              rows={10}
+              placeholder={"Her satıra bir görev başlığı yazın...\nÖrn:\nÇekim Kontrol\nKasa Mutabakat\nLog İnceleme"}
+              value={bulkTitles}
+              onChange={e => setBulkTitles(e.target.value)}
+              style={{ width: "100%" }}
+            />
           </div>
         </div>
 
@@ -228,14 +255,13 @@ export default function AdminTaskTemplates() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                <th style={{ ...th, width: 260 }}>Başlık</th>
+                <th style={{ ...th, width: 280 }}>Başlık</th>
                 <th style={{ ...th, width: 120 }}>Departman</th>
                 <th style={{ ...th, width: 110 }}>Vardiya</th>
-                <th style={{ ...th, width: 100 }}>Tekrar</th>
-                <th style={{ ...th, width: 100, textAlign: "right" }}>Müsaade</th>
-                <th style={{ ...th, width: 160 }}>Atanan</th>
-                <th style={{ ...th, width: 100 }}>Durum</th>
-                <th style={{ ...th, width: 160 }}>İşlem</th>
+                <th style={{ ...th, width: 120 }}>Tekrar</th>
+                <th style={{ ...th, width: 170 }}>Varsayılan Atanan</th>
+                <th style={{ ...th, width: 90 }}>Durum</th>
+                <th style={{ ...th, width: 200 }}>İşlem</th>
               </tr>
             </thead>
             <tbody>
@@ -245,7 +271,6 @@ export default function AdminTaskTemplates() {
                   <td style={td}>{r.department || "—"}</td>
                   <td style={td}>{r.shift || "—"}</td>
                   <td style={td}>{r.repeat}</td>
-                  <td style={{ ...td, textAlign: "right" }}>{r.grace_min}</td>
                   <td style={td}>{r.default_assignee || "—"}</td>
                   <td style={td}>{r.is_active ? "Aktif" : "Pasif"}</td>
                   <td style={td}>
@@ -256,9 +281,7 @@ export default function AdminTaskTemplates() {
                 </tr>
               ))}
               {!rows.length && (
-                <tr>
-                  <td colSpan={8} style={{ padding: 12, color: "#777" }}>Kayıt yok.</td>
-                </tr>
+                <tr><td colSpan={7} style={{ padding: 12, color: "#777" }}>Kayıt yok.</td></tr>
               )}
             </tbody>
           </table>
