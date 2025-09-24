@@ -13,7 +13,10 @@ import app.models.facts         # facts_daily, facts_monthly
 import app.models.identities    # employee_identities
 import app.models.models        # employees (department + kart alanları)
 
-# ROUTERLAR (sadece import — include'lar aşağıda)
+# ↓ Admin Görevleri modelleri (tabloların create_all'da oluşması için import)
+import app.db.models_admin_tasks  # admin_tasks, admin_task_templates
+
+# ROUTERLAR
 from app.api.routes_auth import router as auth_router
 from app.api.routes_org import router as org_router
 from app.api.route_seed import router as seed_router
@@ -24,7 +27,10 @@ from app.api.routes_jobs import router as jobs_router
 from app.api.routes_identities import router as identities_router
 from app.api.routes_employee_view import router as employee_view_router
 from app.api.routes_reports import router as reports_router
+from app.api.routes_admin_tasks import router as admin_tasks_router  # ← EKLENDİ
 
+# Scheduler (geciken görev tarayıcı)
+from app.scheduler.admin_tasks_jobs import start_scheduler  # ← EKLENDİ
 
 # V1: hızlı başlat (prod'da Alembic'e geçilecek)
 Base.metadata.create_all(bind=engine)
@@ -65,13 +71,20 @@ MIGRATIONS_SQL = [
 
 @app.on_event("startup")
 def run_startup_migrations():
+    # idempotent migrationlar
     with engine.begin() as conn:
         for stmt in MIGRATIONS_SQL:
             try:
                 conn.execute(text(stmt))
             except Exception as e:
-                # idempotent: kolon zaten varsa/hata varsa servisi durdurma
                 print(f"[startup-migration] skip/err: {e}")
+
+    # Admin Görevleri: geciken görev tarayıcısını başlat
+    try:
+        start_scheduler()  # interval 5 dk; Europe/Istanbul
+        print("[scheduler] admin_tasks started")
+    except Exception as e:
+        print(f"[scheduler] start err: {e}")
 
 @app.get("/healthz")
 def healthz():
@@ -88,3 +101,4 @@ app.include_router(jobs_router)
 app.include_router(identities_router)
 app.include_router(employee_view_router)
 app.include_router(reports_router)
+app.include_router(admin_tasks_router)  # ← EKLENDİ
