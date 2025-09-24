@@ -14,9 +14,10 @@ import app.models.facts         # facts_daily, facts_monthly
 import app.models.identities    # employee_identities
 import app.models.models        # employees (department + kart alanları)
 
-# Admin Görevleri modelleri
-import app.db.models_admin_tasks     # admin_tasks, admin_task_templates
-import app.db.models_admin_settings  # admin_settings (bot ayarları)
+# Admin & Bot modelleri
+import app.db.models_admin_tasks        # admin_tasks, admin_task_templates
+import app.db.models_admin_settings     # admin_settings (bot ayarları)
+import app.db.models_admin_notifications  # admin_notifications (bildirim şablonları)
 
 # ROUTERLAR
 from app.api.routes_auth import router as auth_router
@@ -30,9 +31,10 @@ from app.api.routes_identities import router as identities_router
 from app.api.routes_employee_view import router as employee_view_router
 from app.api.routes_reports import router as reports_router
 from app.api.routes_admin_tasks import router as admin_tasks_router
-from app.api.routes_admin_bot import router as admin_bot_router  # Bot İşlemleri
+from app.api.routes_admin_bot import router as admin_bot_router
+from app.api.routes_admin_notifications import router as admin_notify_router  # Bildirim Yönetimi
 
-# Scheduler (geciken görev tarayıcı)
+# Scheduler (geciken görev tarayıcı + attendance)
 from app.scheduler.admin_tasks_jobs import start_scheduler
 
 # V1: hızlı başlat (prod'da Alembic'e geçilecek)
@@ -88,6 +90,19 @@ MIGRATIONS_SQL = [
     "ON CONFLICT (key) DO NOTHING;",
     "INSERT INTO admin_settings(key,value) VALUES ('finance_tg_enabled','0') "
     "ON CONFLICT (key) DO NOTHING;",
+    "INSERT INTO admin_settings(key,value) VALUES ('attendance_tg_enabled','0') "
+    "ON CONFLICT (key) DO NOTHING;",
+
+    # admin_notifications tablosu
+    "CREATE TABLE IF NOT EXISTS admin_notifications ("
+    " id SERIAL PRIMARY KEY,"
+    " channel VARCHAR(32) NOT NULL,"
+    " name VARCHAR(120) NOT NULL,"
+    " template TEXT NOT NULL,"
+    " is_active BOOLEAN NOT NULL DEFAULT TRUE,"
+    " created_at TIMESTAMP NOT NULL DEFAULT NOW(),"
+    " updated_at TIMESTAMP NOT NULL DEFAULT NOW()"
+    ");",
 ]
 
 @app.on_event("startup")
@@ -100,11 +115,11 @@ def run_startup_migrations():
             except Exception as e:
                 print(f"[startup-migration] skip/err: {e}")
 
-    # Admin Görevleri: geciken görev tarayıcısını başlat (çoklu worker için guard)
+    # Admin Görevleri + Attendance: tarayıcıyı başlat (çoklu worker için guard)
     try:
         if os.getenv("RUN_SCHEDULER", "1") == "1":
             start_scheduler()  # interval 5 dk; Europe/Istanbul
-            print("[scheduler] admin_tasks started")
+            print("[scheduler] started")
         else:
             print("[scheduler] disabled by RUN_SCHEDULER")
     except Exception as e:
@@ -126,4 +141,5 @@ app.include_router(identities_router)
 app.include_router(employee_view_router)
 app.include_router(reports_router)
 app.include_router(admin_tasks_router)
-app.include_router(admin_bot_router)   # Bot İşlemleri uçları
+app.include_router(admin_bot_router)       # Bot İşlemleri uçları
+app.include_router(admin_notify_router)    # Bildirim Yönetimi uçları
