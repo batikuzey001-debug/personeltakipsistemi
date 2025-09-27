@@ -1,7 +1,7 @@
 # apps/api/app/services/bonus_summary_service.py
 from __future__ import annotations
 from datetime import datetime, date, timedelta
-from typing import Optional, Tuple
+from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text, bindparam
 from pytz import timezone
@@ -125,7 +125,7 @@ def _sql_bonus_daily():
       (SELECT AVG(first_sec) FROM day_fr_secs) AS avg_first_sec,
       (SELECT COUNT(*) FROM day_fr_secs WHERE first_sec > :sla_first) AS sla_first_cnt,
       (
-        SELECT json_agg(x ORDER BY x.close_cnt DESC, x.avg_first_emp ASC)
+        SELECT json_agg(x ORDER BY x.cnt DESC, x.avg_first_emp ASC)
         FROM (
           SELECT closer_emp AS employee_id, close_cnt AS cnt, avg_first_emp
           FROM close_emp_with_kt
@@ -273,7 +273,7 @@ def _sql_bonus_periodic():
       (SELECT COUNT(*) FROM win_fr_secs WHERE first_sec > :sla_first) AS sla_first_cnt,
       (SELECT COUNT(*) FROM win_fr_secs) AS first_cnt,
       (
-        SELECT json_agg(x ORDER BY x.close_cnt DESC, x.avg_first_emp ASC)
+        SELECT json_agg(x ORDER BY x.cnt DESC, x.avg_first_emp ASC)
         FROM (
           SELECT closer_emp AS employee_id, close_cnt AS cnt, avg_first_emp
           FROM close_emp_with_kt
