@@ -52,27 +52,53 @@ def _pick(cols: list[str], candidates: list[str]) -> Optional[str]:
             return c
     return None
 
+def _truncate_to_72_bytes_utf8(s: str) -> str:
+    """
+    UTF-8 byte düzeyinde 72 byte'a truncate eder, sonra tekrar string döner.
+    (bcrypt'in 72 byte sınırını bayt bazında uygularız)
+    """
+    if not isinstance(s, str):
+        s = str(s or "")
+    b = s.encode("utf-8")
+    if len(b) <= 72:
+        return s
+    tb = b[:72]
+    # bytes -> str dönüşünde hatalı byte'ları ignore ile at
+    return tb.decode("utf-8", errors="ignore")
+
 def _safe_hash_force_bcrypt_sha256(pw: str) -> str:
     """
     Garantili: bcrypt'in 72-byte sınırını aşmamak için önlem alır.
     - Önce utf-8 byte'larını alır, 72 bayta truncate eder.
-    - Sonra passlib.hash.bcrypt_sha256 ile hash'ler.
+    - Sonra önce bcrypt_sha256 ile hash'lemeyi dener (pref).
+    - Eğer passlib bcrypt_sha256 yoksa fallback olarak passlib.hash.bcrypt kullanır.
     """
+    if pw is None:
+        pw = ""
+    pw_trunc = _truncate_to_72_bytes_utf8(pw)
+
+    # tercihen bcrypt_sha256 (SHA256 -> bcrypt), çünkü input uzunluğu zaten güvenli olur
     try:
         from passlib.hash import bcrypt_sha256
-    except Exception as ex:
-        raise HTTPException(status_code=500, detail=f"seed error (no passlib bcrypt_sha256): {ex}")
+        try:
+            return bcrypt_sha256.hash(pw_trunc)
+        except Exception as ex:
+            # beklenmedik hata, fallback denenecek
+            fallback_err = ex
+    except Exception as import_ex:
+        bcrypt_sha256 = None
+        fallback_err = import_ex
 
-    if not isinstance(pw, str):
-        pw = str(pw or "")
-    b = pw.encode("utf-8")
-    if len(b) > 72:
-        b = b[:72]
-    truncated = b.decode("utf-8", errors="ignore")
+    # fallback: passlib.hash.bcrypt ile doğrudan (zaten pw_trunc 72 bayta çekildi)
     try:
-        return bcrypt_sha256.hash(truncated)
-    except Exception as ex:
-        raise HTTPException(status_code=500, detail=f"seed error (hash): {ex}")
+        from passlib.hash import bcrypt
+        try:
+            return bcrypt.hash(pw_trunc)
+        except Exception as ex2:
+            raise HTTPException(status_code=500, detail=f"seed error (hash fallback): {ex2}")
+    except Exception as import_ex2:
+        # Her iki kütüphane de yoksa/çalışmıyorsa kullanıcıya açıklayıcı hata ver
+        raise HTTPException(status_code=500, detail=f"seed error (no passlib hash available): {fallback_err} / {import_ex2}")
 
 @router.api_route("/super", methods=["GET", "POST"])
 def seed_super_admin(
@@ -106,7 +132,7 @@ def seed_super_admin(
         if not pwd_col:
             raise HTTPException(status_code=500, detail=f"password column not found in {table}")
 
-        # Güvenli hash: truncate + bcrypt_sha256
+        # Güvenli hash: truncate + bcrypt_sha256 (veya fallback bcrypt)
         hpw = _safe_hash_force_bcrypt_sha256(password or "")
 
         exists = db.execute(
@@ -152,4 +178,5 @@ def seed_super_admin(
     except HTTPException:
         raise
     except Exception as ex:
+        # Hata mesajını daha açıklayıcı yapalım
         raise HTTPException(status_code=500, detail=f"seed error: {ex}")
