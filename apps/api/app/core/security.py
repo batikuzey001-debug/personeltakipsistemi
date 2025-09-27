@@ -11,7 +11,7 @@ from app.core.config import settings
 
 # -------------------------------------------------------------------
 # Parola hash/doğrulama
-# - bcrypt_sha256: 72 byte sınırını ortadan kaldırır (önce SHA256, sonra bcrypt)
+# - bcrypt_sha256: 72 byte sınırını kaldırır (SHA256 + bcrypt)
 # - bcrypt: eski kayıtlar için geriye dönük doğrulama
 # -------------------------------------------------------------------
 pwd_context = CryptContext(
@@ -36,6 +36,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     except Exception:
         # beklenmedik formatlarda 500 atmamak için False
         return False
+
+
+# ---- GERİYE DÖNÜK UYUMLULUK (route_seed.py için) -------------------
+# Eski kod 'hash_password' ismini import ediyor; alias olarak sağlayalım.
+def hash_password(password: str) -> str:
+    return get_password_hash(password)
 
 
 # -------------------------------------------------------------------
