@@ -59,8 +59,9 @@ def _mmss(seconds: Optional[float]) -> str:
     s = int(round(max(0.0, seconds)))
     return f"{s//60:02d}:{s%60:02d}"
 
+# ---------------- Gün Sonu (dün) ----------------
 def _sql_bonus_daily():
-    return f"""
+    return """
     WITH
     origin AS (
       SELECT e.correlation_id AS corr, MIN(e.ts) AS origin_ts
@@ -123,9 +124,15 @@ def _sql_bonus_daily():
       (SELECT COUNT(*) FROM day_fc) AS total_close,
       (SELECT AVG(first_sec) FROM day_fr_secs) AS avg_first_sec,
       (SELECT COUNT(*) FROM day_fr_secs WHERE first_sec > :sla_first) AS sla_first_cnt,
-      (SELECT json_agg(json_build_object('employee_id', closer_emp, 'cnt', close_cnt, 'avg_first_emp', avg_first_emp)
-                       ORDER BY close_cnt DESC NULLS LAST, avg_first_emp ASC NULLS LAST LIMIT 3)
-       FROM close_emp_with_kt) AS top3
+      (
+        SELECT json_agg(x ORDER BY x.close_cnt DESC, x.avg_first_emp ASC)
+        FROM (
+          SELECT closer_emp AS employee_id, close_cnt AS cnt, avg_first_emp
+          FROM close_emp_with_kt
+          ORDER BY close_cnt DESC, avg_first_emp ASC
+          LIMIT 3
+        ) AS x
+      ) AS top3
     ;
     """
 
@@ -157,28 +164,23 @@ def build_bonus_daily_text(rows, target_day: date, sla_first_sec: int) -> str:
 def send_bonus_daily_summary(db: Session, target_day: date, sla_first_sec: int = SLA_FIRST_SEC_DEFAULT) -> bool:
     if not get_bool(db, BONUS_TG_ENABLED_KEY, False):
         return False
-
     period_key = target_day.strftime("%Y-%m-%d")
     if _already_sent(db, period_key):
         return False
 
     frm_utc, to_utc = _ist_day_edges_utc(target_day)
-
-    # !!! LIST PARAMETRELERİ İÇİN EXPANDING !!!
     stmt = text(_sql_bonus_daily()).bindparams(bindparam("close_types", expanding=True))
-
     rows = db.execute(
         stmt,
         {"frm": frm_utc, "to": to_utc, "close_types": list(CLOSE_TYPES), "sla_first": sla_first_sec},
     ).mappings().first()
-
     msg = build_bonus_daily_text(rows, target_day, sla_first_sec)
     sent = _tg_send(msg)
     if sent:
         _mark_sent(db, period_key)
     return sent
 
-# ---------- 2 SAATLİK ÖZET (kısa şablon) ----------
+# ---------------- 2 Saatlik (hafif) ----------------
 def _ist_window_utc(end_ist: datetime, hours: int = 2):
     end_ist = end_ist.astimezone(IST)
     start_ist = end_ist - timedelta(hours=hours)
@@ -206,7 +208,7 @@ def _mark_sent_periodic(db: Session, period_key: str) -> None:
     db.commit()
 
 def _sql_bonus_periodic():
-    return f"""
+    return """
     WITH
     origin AS (
       SELECT e.correlation_id AS corr, MIN(e.ts) AS origin_ts
@@ -270,10 +272,15 @@ def _sql_bonus_periodic():
       (SELECT AVG(first_sec) FROM win_fr_secs) AS avg_first_sec,
       (SELECT COUNT(*) FROM win_fr_secs WHERE first_sec > :sla_first) AS sla_first_cnt,
       (SELECT COUNT(*) FROM win_fr_secs) AS first_cnt,
-      (SELECT json_agg(json_build_object('employee_id', closer_emp, 'cnt', close_cnt, 'avg_first_emp', avg_first_emp)
-                       ORDER BY close_cnt DESC NULLS LAST, avg_first_emp ASC NULLS LAST
-                       LIMIT 2)
-       FROM close_emp_with_kt) AS top2
+      (
+        SELECT json_agg(x ORDER BY x.close_cnt DESC, x.avg_first_emp ASC)
+        FROM (
+          SELECT closer_emp AS employee_id, close_cnt AS cnt, avg_first_emp
+          FROM close_emp_with_kt
+          ORDER BY close_cnt DESC, avg_first_emp ASC
+          LIMIT 2
+        ) AS x
+      ) AS top2
     ;
     """
 
@@ -324,9 +331,7 @@ def send_bonus_periodic_2h(
     if _already_sent_periodic(db, period_key):
         return False
 
-    # !!! LIST PARAMETRELERİ İÇİN EXPANDING !!!
     stmt = text(_sql_bonus_periodic()).bindparams(bindparam("close_types", expanding=True))
-
     rows = db.execute(
         stmt,
         {"frm": frm_utc, "to": to_utc, "close_types": list(CLOSE_TYPES), "sla_first": sla_first_sec},
