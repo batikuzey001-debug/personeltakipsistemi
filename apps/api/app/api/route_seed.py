@@ -28,13 +28,11 @@ def _find_user_table(db: Session) -> Optional[str]:
             "SELECT 1 FROM information_schema.tables WHERE table_name=:t LIMIT 1"
         ), {"t": t}).first()
         if r:
-            # email kolonu var mı bak
             has_email = db.execute(text(
                 "SELECT 1 FROM information_schema.columns WHERE table_name=:t AND column_name ILIKE 'email' LIMIT 1"
             ), {"t": t}).first()
             if has_email:
                 return t
-    # fallback: herhangi bir 'email' kolonu olan tabloyu bul
     any_tab = db.execute(text(
         "SELECT table_name FROM information_schema.columns WHERE column_name ILIKE 'email' ORDER BY table_name LIMIT 1"
     )).scalar()
@@ -52,78 +50,35 @@ def _pick(cols: list[str], candidates: list[str]) -> Optional[str]:
             return c
     return None
 
-def _truncate_to_72_bytes_utf8(s: str) -> str:
+def _hash_bcrypt_only(pw: str) -> str:
     """
-    Gerektiğinde bcrypt için 72-byte sınırını bayt düzeyinde uygular.
-    Ancak normalde tercihimiz bcrypt_sha256 ya da pbkdf2_sha256 kullanmak.
-    """
-    if not isinstance(s, str):
-        s = str(s or "")
-    b = s.encode("utf-8")
-    if len(b) <= 72:
-        return s
-    tb = b[:72]
-    return tb.decode("utf-8", errors="ignore")
-
-def _safe_hash(pw: str) -> str:
-    """
-    Öncelik:
-      1) bcrypt_sha256 (uzun parolalar için uygundur çünkü önce SHA256 uygular)
-      2) pbkdf2_sha256 (uzun parolalar için uygundur - bcrypt alternatifi)
-      3) fallback: bcrypt (72 byte sınırı nedeniyle input'u truncate edip kullan)
-    Eğer hiçbiri yoksa 500 hatası fırlatılır.
+    Giriş sistemi bcrypt beklediği için seed'te yalnızca bcrypt hash üret.
+    Parola kısa tutulduğu sürece (<=72 byte) sorun yok.
     """
     if pw is None:
         pw = ""
-
-    # 1) bcrypt_sha256
-    try:
-        from passlib.hash import bcrypt_sha256
-        try:
-            return bcrypt_sha256.hash(pw)
-        except Exception as ex:
-            # beklenmedik, fallback denenecek
-            fallback_err = ex
-    except Exception as import_ex:
-        bcrypt_sha256 = None
-        fallback_err = import_ex
-
-    # 2) pbkdf2_sha256 (güvenli ve uzun şifre destekler)
-    try:
-        from passlib.hash import pbkdf2_sha256
-        try:
-            return pbkdf2_sha256.hash(pw)
-        except Exception as ex2:
-            fallback_err = ex2
-    except Exception as import_ex2:
-        pbkdf2_sha256 = None
-        # devam, bcrypt'a düşecek
-
-    # 3) Son çare: bcrypt (72 byte sınırı) — bu durumda truncate et
     try:
         from passlib.hash import bcrypt
-    except Exception as import_ex3:
-        raise HTTPException(status_code=500, detail=f"seed error (no passlib hash available): {fallback_err} / {import_ex3}")
-
-    # truncate to 72 bytes (bayt bazında) before bcrypt
+    except Exception as import_ex:
+        raise HTTPException(status_code=500, detail=f"seed error (bcrypt import): {import_ex}")
     try:
-        pw_trunc = _truncate_to_72_bytes_utf8(pw)
-        return bcrypt.hash(pw_trunc)
-    except Exception as ex3:
-        raise HTTPException(status_code=500, detail=f"seed error (hash fallback): {ex3}")
+        return bcrypt.hash(pw)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"seed error (bcrypt hash): {ex}")
 
 @router.api_route("/super", methods=["GET", "POST"])
 def seed_super_admin(
     secret: str = Query(..., description="SEED_SECRET"),
     email: str = Query("super@admin.com"),
-    password: str = Query("admin123"),
+    password: str = Query("Admin@123"),  # kısa ve güvenli bir varsayılan
     full_name: str = Query("Super Admin"),
     db: Session = Depends(get_db),
 ):
     """
     Süper admin oluşturur/günceller.
+    Girişin bcrypt doğrulamasıyla uyumlu kalması için yalnızca bcrypt hash yazar.
     Örnek:
-      GET /seed/super?secret=seed-abc123!&email=super@admin.com&password=admin123
+      /seed/super?secret=seed-abc123!&email=super@admin.com&password=Admin@123
     """
     _expect_secret(secret)
 
@@ -144,8 +99,8 @@ def seed_super_admin(
         if not pwd_col:
             raise HTTPException(status_code=500, detail=f"password column not found in {table}")
 
-        # Güvenli hash: tercih edilen methodları kullan
-        hpw = _safe_hash(password or "")
+        # bcrypt ile hashle (login doğrulamasıyla birebir uyum)
+        hpw = _hash_bcrypt_only(password or "")
 
         exists = db.execute(
             text(f"SELECT 1 FROM {table} WHERE email = :e LIMIT 1"),
