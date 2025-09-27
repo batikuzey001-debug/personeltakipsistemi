@@ -22,7 +22,7 @@ import app.db.models_admin_notifications # admin_notifications (bildirim şablon
 # ROUTERLAR
 from app.api.routes_auth import router as auth_router
 from app.api.routes_org import router as org_router
-from app.api.route_seed import router as seed_router              # ← SEED router (tek import)
+from app.api.route_seed import router as seed_router              # /seed/*
 from app.api.routes_users import router as users_router
 from app.api.routes_telegram import router as telegram_router
 from app.api.routes_debug import router as debug_router
@@ -31,10 +31,10 @@ from app.api.routes_identities import router as identities_router
 from app.api.routes_employee_view import router as employee_view_router
 from app.api.routes_reports import router as reports_router
 from app.api.routes_admin_tasks import router as admin_tasks_router
-from app.api.routes_admin_bot import router as admin_bot_router
+from app.api.routes_admin_bot import router as admin_bot_router          # /admin-bot/*
 from app.api.routes_admin_notifications import router as admin_notify_router
 
-# Scheduler (geciken görev tarayıcı + attendance + bonus daily/periodic)
+# Scheduler (geciken görev tarayıcı + attendance + bonus)
 from app.scheduler.admin_tasks_jobs import start_scheduler
 
 # V1: hızlı başlat (prod'da Alembic'e geçilecek)
@@ -135,6 +135,11 @@ def run_startup_migrations():
 def healthz():
     return {"ok": True}
 
+# Debug amaçlı: tüm yolları gör
+@app.get("/_routes")
+def list_routes():
+    return sorted({f"{getattr(r, 'methods', {'GET'})} {getattr(r, 'path', getattr(r, 'path_regex', ''))}" for r in app.router.routes})
+
 # Router kayıtları (tekrarsız)
 app.include_router(auth_router)
 app.include_router(org_router)
@@ -147,5 +152,5 @@ app.include_router(identities_router)
 app.include_router(employee_view_router)
 app.include_router(reports_router)
 app.include_router(admin_tasks_router)
-app.include_router(admin_bot_router)     # Bot İşlemleri
-app.include_router(admin_notify_router)  # Bildirim Yönetimi
+app.include_router(admin_bot_router)     # /admin-bot/*
+app.include_router(admin_notify_router)  # /admin-notify/*
