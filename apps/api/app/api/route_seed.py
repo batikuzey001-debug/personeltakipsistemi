@@ -54,8 +54,8 @@ def _pick(cols: list[str], candidates: list[str]) -> Optional[str]:
 
 def _truncate_to_72_bytes_utf8(s: str) -> str:
     """
-    UTF-8 byte düzeyinde 72 byte'a truncate eder, sonra tekrar string döner.
-    (bcrypt'in 72 byte sınırını bayt bazında uygularız)
+    Gerektiğinde bcrypt için 72-byte sınırını bayt düzeyinde uygular.
+    Ancak normalde tercihimiz bcrypt_sha256 ya da pbkdf2_sha256 kullanmak.
     """
     if not isinstance(s, str):
         s = str(s or "")
@@ -63,42 +63,54 @@ def _truncate_to_72_bytes_utf8(s: str) -> str:
     if len(b) <= 72:
         return s
     tb = b[:72]
-    # bytes -> str dönüşünde hatalı byte'ları ignore ile at
     return tb.decode("utf-8", errors="ignore")
 
-def _safe_hash_force_bcrypt_sha256(pw: str) -> str:
+def _safe_hash(pw: str) -> str:
     """
-    Garantili: bcrypt'in 72-byte sınırını aşmamak için önlem alır.
-    - Önce utf-8 byte'larını alır, 72 bayta truncate eder.
-    - Sonra önce bcrypt_sha256 ile hash'lemeyi dener (pref).
-    - Eğer passlib bcrypt_sha256 yoksa fallback olarak passlib.hash.bcrypt kullanır.
+    Öncelik:
+      1) bcrypt_sha256 (uzun parolalar için uygundur çünkü önce SHA256 uygular)
+      2) pbkdf2_sha256 (uzun parolalar için uygundur - bcrypt alternatifi)
+      3) fallback: bcrypt (72 byte sınırı nedeniyle input'u truncate edip kullan)
+    Eğer hiçbiri yoksa 500 hatası fırlatılır.
     """
     if pw is None:
         pw = ""
-    pw_trunc = _truncate_to_72_bytes_utf8(pw)
 
-    # tercihen bcrypt_sha256 (SHA256 -> bcrypt), çünkü input uzunluğu zaten güvenli olur
+    # 1) bcrypt_sha256
     try:
         from passlib.hash import bcrypt_sha256
         try:
-            return bcrypt_sha256.hash(pw_trunc)
+            return bcrypt_sha256.hash(pw)
         except Exception as ex:
-            # beklenmedik hata, fallback denenecek
+            # beklenmedik, fallback denenecek
             fallback_err = ex
     except Exception as import_ex:
         bcrypt_sha256 = None
         fallback_err = import_ex
 
-    # fallback: passlib.hash.bcrypt ile doğrudan (zaten pw_trunc 72 bayta çekildi)
+    # 2) pbkdf2_sha256 (güvenli ve uzun şifre destekler)
+    try:
+        from passlib.hash import pbkdf2_sha256
+        try:
+            return pbkdf2_sha256.hash(pw)
+        except Exception as ex2:
+            fallback_err = ex2
+    except Exception as import_ex2:
+        pbkdf2_sha256 = None
+        # devam, bcrypt'a düşecek
+
+    # 3) Son çare: bcrypt (72 byte sınırı) — bu durumda truncate et
     try:
         from passlib.hash import bcrypt
-        try:
-            return bcrypt.hash(pw_trunc)
-        except Exception as ex2:
-            raise HTTPException(status_code=500, detail=f"seed error (hash fallback): {ex2}")
-    except Exception as import_ex2:
-        # Her iki kütüphane de yoksa/çalışmıyorsa kullanıcıya açıklayıcı hata ver
-        raise HTTPException(status_code=500, detail=f"seed error (no passlib hash available): {fallback_err} / {import_ex2}")
+    except Exception as import_ex3:
+        raise HTTPException(status_code=500, detail=f"seed error (no passlib hash available): {fallback_err} / {import_ex3}")
+
+    # truncate to 72 bytes (bayt bazında) before bcrypt
+    try:
+        pw_trunc = _truncate_to_72_bytes_utf8(pw)
+        return bcrypt.hash(pw_trunc)
+    except Exception as ex3:
+        raise HTTPException(status_code=500, detail=f"seed error (hash fallback): {ex3}")
 
 @router.api_route("/super", methods=["GET", "POST"])
 def seed_super_admin(
@@ -132,8 +144,8 @@ def seed_super_admin(
         if not pwd_col:
             raise HTTPException(status_code=500, detail=f"password column not found in {table}")
 
-        # Güvenli hash: truncate + bcrypt_sha256 (veya fallback bcrypt)
-        hpw = _safe_hash_force_bcrypt_sha256(password or "")
+        # Güvenli hash: tercih edilen methodları kullan
+        hpw = _safe_hash(password or "")
 
         exists = db.execute(
             text(f"SELECT 1 FROM {table} WHERE email = :e LIMIT 1"),
@@ -178,5 +190,4 @@ def seed_super_admin(
     except HTTPException:
         raise
     except Exception as ex:
-        # Hata mesajını daha açıklayıcı yapalım
         raise HTTPException(status_code=500, detail=f"seed error: {ex}")
