@@ -8,7 +8,7 @@ from typing import Optional
 
 from app.deps import get_db
 from app.core.config import settings
-from app.core.security import hash_password
+from app.core.security import hash_password  # mevcut fonksiyonu önce deneriz
 
 router = APIRouter(prefix="/seed", tags=["seed"])
 
@@ -24,40 +24,21 @@ def _expect_secret(secret: str):
         raise HTTPException(status_code=401, detail="invalid seed secret")
 
 def _find_user_table(db: Session) -> Optional[str]:
-    # Önce öncelikli tablolara bak
+    # önce yaygın tablo adları
     for t in PRIORITY_TABLES:
-        q = text("""
-            SELECT 1
-            FROM information_schema.tables
-            WHERE table_name = :t
-            LIMIT 1
-        """)
-        if db.execute(q, {"t": t}).first():
-            # email kolonu var mı?
-            qc = text("""
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_name = :t AND column_name ILIKE 'email'
-                LIMIT 1
-            """)
-            if db.execute(qc, {"t": t}).first():
+        if db.execute(text("SELECT 1 FROM information_schema.tables WHERE table_name=:t LIMIT 1"), {"t": t}).first():
+            if db.execute(text("SELECT 1 FROM information_schema.columns WHERE table_name=:t AND column_name ILIKE 'email' LIMIT 1"), {"t": t}).first():
                 return t
-    # Sonra email kolonu olan herhangi bir tablo
-    any_tab = db.execute(text("""
-        SELECT table_name
-        FROM information_schema.columns
-        WHERE column_name ILIKE 'email'
-        ORDER BY table_name
-        LIMIT 1
-    """)).scalar()
+    # sonra email kolonu olan ilk tablo
+    any_tab = db.execute(text(
+        "SELECT table_name FROM information_schema.columns WHERE column_name ILIKE 'email' ORDER BY table_name LIMIT 1"
+    )).scalar()
     return any_tab
 
 def _columns_of(db: Session, table: str) -> list[str]:
-    rows = db.execute(text("""
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_name = :t
-    """), {"t": table}).fetchall()
+    rows = db.execute(text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name=:t"
+    ), {"t": table}).fetchall()
     return [r[0] for r in rows]
 
 def _pick(cols: list[str], candidates: list[str]) -> Optional[str]:
@@ -65,6 +46,21 @@ def _pick(cols: list[str], candidates: list[str]) -> Optional[str]:
         if c in cols:
             return c
     return None
+
+def _safe_hash(pw: str) -> str:
+    """
+    Önce mevcut hash_password() ile dener; bcrypt 72-byte hatasında otomatik
+    bcrypt_sha256'a düşer. Böylece seed asla patlamaz.
+    """
+    try:
+        return hash_password(pw or "")
+    except Exception:
+        try:
+            from passlib.hash import bcrypt_sha256
+            return bcrypt_sha256.hash(pw or "")
+        except Exception as ex:
+            # hatayı görünür kıl
+            raise HTTPException(status_code=500, detail=f"seed error (hash): {ex}")
 
 @router.api_route("/super", methods=["GET", "POST"])
 def seed_super_admin(
@@ -75,8 +71,8 @@ def seed_super_admin(
     db: Session = Depends(get_db),
 ):
     """
-    Süper admin oluşturur/günceller (tablo/kolon adlarını otomatik keşfeder).
-    Örnek:
+    Süper admin oluşturur/günceller (tablo & kolon adlarını otomatik keşfeder).
+    GET ile tarayıcıdan da çağrılabilir:
       /seed/super?secret=seed-abc123!&email=super@admin.com&password=admin123
     """
     _expect_secret(secret)
@@ -86,102 +82,63 @@ def seed_super_admin(
         if not table:
             raise HTTPException(status_code=500, detail="user table not found")
 
-        cols = _columns_of(db, table)
-        cols_lower = [c.lower() for c in cols]
-        if "email" not in cols_lower:
+        cols = [c.lower() for c in _columns_of(db, table)]
+        if "email" not in cols:
             raise HTTPException(status_code=500, detail=f"'email' column not found in {table}")
 
-        # Kolon seçimleri
-        pwd_col  = _pick(cols_lower, PASSWORD_COL_CAND)
-        role_col = _pick(cols_lower, ROLE_COL_CAND)
-        act_col  = _pick(cols_lower, ACTIVE_COL_CAND)
-        name_col = _pick(cols_lower, NAME_COL_CAND)
+        pwd_col  = _pick(cols, PASSWORD_COL_CAND)
+        role_col = _pick(cols, ROLE_COL_CAND)
+        act_col  = _pick(cols, ACTIVE_COL_CAND)
+        name_col = _pick(cols, NAME_COL_CAND)
 
-        # Kayıt var mı?
+        if not pwd_col:
+            # parola kolonu yoksa minimum viable: sadece email+role set edebiliriz
+            raise HTTPException(status_code=500, detail=f"password column not found in {table}")
+
+        hpw = _safe_hash(password)
+
         exists = db.execute(
             text(f"SELECT 1 FROM {table} WHERE email = :e LIMIT 1"),
             {"e": email},
         ).first() is not None
 
-        hpw = hash_password(password)
-
         if exists:
-            # UPDATE
-            sets = []
-            params = {"e": email}
-            if pwd_col:
-                sets.append(f"{pwd_col} = :p")
-                params["p"] = hpw
-            if role_col:
-                sets.append(f"{role_col} = :r")
-                params["r"] = "super_admin"
-            if act_col:
-                sets.append(f"{act_col} = :a")
-                params["a"] = True
-            if name_col:
-                sets.append(f"{name_col} = :n")
-                params["n"] = full_name
+            sets = [f"{pwd_col}=:p"]
+            params = {"e": email, "p": hpw}
+            if role_col: sets.append(f"{role_col}=:r"); params["r"] = "super_admin"
+            if act_col:  sets.append(f"{act_col}=:a");   params["a"] = True
+            if name_col: sets.append(f"{name_col}=:n");  params["n"] = full_name
 
-            if not sets:
-                # Hiç set yapamıyorsak en azından role/email güncellemeyi deneyelim
-                sets.append("email = email")
-
-            sql = text(f"UPDATE {table} SET {', '.join(sets)} WHERE email = :e")
-            db.execute(sql, params)
+            db.execute(text(f"UPDATE {table} SET {', '.join(sets)} WHERE email=:e"), params)
             action = "updated"
         else:
-            # INSERT
-            insert_cols = ["email"]
-            insert_vals = [":e"]
-            params = {"e": email}
-            if pwd_col:
-                insert_cols.append(pwd_col)
-                insert_vals.append(":p")
-                params["p"] = hpw
-            if role_col:
-                insert_cols.append(role_col)
-                insert_vals.append(":r")
-                params["r"] = "super_admin"
-            if act_col:
-                insert_cols.append(act_col)
-                insert_vals.append(":a")
-                params["a"] = True
-            if name_col:
-                insert_cols.append(name_col)
-                insert_vals.append(":n")
-                params["n"] = full_name
+            cols_i = ["email", pwd_col]
+            vals_i = [":e", ":p"]
+            params = {"e": email, "p": hpw}
+            if role_col: cols_i.append(role_col); vals_i.append(":r"); params["r"] = "super_admin"
+            if act_col:  cols_i.append(act_col);  vals_i.append(":a"); params["a"] = True
+            if name_col: cols_i.append(name_col); vals_i.append(":n"); params["n"] = full_name
 
-            sql = text(f"INSERT INTO {table} ({', '.join(insert_cols)}) VALUES ({', '.join(insert_vals)})")
-            db.execute(sql, params)
+            db.execute(text(f"INSERT INTO {table} ({', '.join(cols_i)}) VALUES ({', '.join(vals_i)})"), params)
             action = "created"
 
         db.commit()
 
-        # Basit çıktı (kimlik varsa çek)
-        user_row = db.execute(
-            text(f"SELECT * FROM {table} WHERE email = :e"),
-            {"e": email}
-        ).mappings().first()
-        user_id = user_row.get("id") if user_row else None
-        role_val = user_row.get(role_col) if (user_row and role_col) else "super_admin"
-        active_val = user_row.get(act_col) if (user_row and act_col) else True
-        name_val = user_row.get(name_col) if (user_row and name_col) else full_name
-
+        # geri bildirim
+        row = db.execute(text(f"SELECT * FROM {table} WHERE email=:e"), {"e": email}).mappings().first()
         return {
             "ok": True,
             "action": action,
             "user": {
-                "id": user_id,
+                "id": row.get("id") if row else None,
                 "email": email,
-                "role": role_val,
-                "is_active": active_val,
-                "full_name": name_val,
+                "role": row.get(role_col) if (row and role_col) else "super_admin",
+                "is_active": row.get(act_col) if (row and act_col) else True,
+                "full_name": row.get(name_col) if (row and name_col) else full_name,
                 "table": table,
             },
         }
-
     except HTTPException:
         raise
     except Exception as ex:
-        # hatayı görünür kılalım ki 500 yerine ne olduğunu görelim
         raise HTTPException(status_code=500, detail=f"seed error: {ex}")
