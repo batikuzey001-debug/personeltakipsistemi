@@ -1,9 +1,9 @@
 # apps/api/app/services/bonus_summary_service.py
 from __future__ import annotations
-from datetime import datetime, date
-from typing import Optional
+from datetime import datetime, date, timedelta
+from typing import Optional, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from pytz import timezone
 import requests
 
@@ -17,7 +17,6 @@ SLA_FIRST_SEC_DEFAULT = 60  # İlk KT SLA eşiği
 CLOSE_TYPES = ("approve", "reply_close", "reject")
 
 def _ist_day_edges_utc(d: date):
-    """IST gün sınırlarını UTC aralığına çevirir."""
     start_ist = IST.localize(datetime(d.year, d.month, d.day, 0, 0, 0))
     end_ist   = IST.localize(datetime(d.year, d.month, d.day, 23, 59, 59))
     return start_ist.astimezone(UTC), end_ist.astimezone(UTC)
@@ -61,11 +60,6 @@ def _mmss(seconds: Optional[float]) -> str:
     return f"{s//60:02d}:{s%60:02d}"
 
 def _sql_bonus_daily():
-    """
-    Günlük BONUS özeti:
-    - KT (reply_first) metrikleri: reply_first.ts gün penceresinde
-    - Kapanış sayıları/top3: first_close.ts gün penceresinde
-    """
     return f"""
     WITH
     origin AS (
@@ -89,7 +83,6 @@ def _sql_bonus_daily():
       WHERE e.source_channel='bonus' AND e.type IN :close_types
       ORDER BY e.correlation_id, e.ts
     ),
-    -- Günlük KT havuzu: reply_first günü
     day_fr AS (
       SELECT fr.corr, fr.first_ts, o.origin_ts
       FROM fr
@@ -101,19 +94,16 @@ def _sql_bonus_daily():
       FROM day_fr
       WHERE first_ts IS NOT NULL AND origin_ts IS NOT NULL
     ),
-    -- Günlük kapanış havuzu: first_close günü
     day_fc AS (
       SELECT fc.corr, fc.closer_emp, fc.close_ts
       FROM fc
       WHERE fc.close_ts >= :frm AND fc.close_ts <= :to
     ),
-    -- Kişi bazında kapanış sayısı
     close_emp AS (
       SELECT closer_emp, COUNT(*) AS close_cnt
       FROM day_fc
       GROUP BY closer_emp
     ),
-    -- Kişi bazında KT ortalaması (kapanan corr'lar üzerinden KT'yi eşleştir)
     fr_on_fc AS (
       SELECT dfc.closer_emp,
              EXTRACT(EPOCH FROM (dfr.first_ts - dfr.origin_ts)) AS first_sec
@@ -130,19 +120,12 @@ def _sql_bonus_daily():
       GROUP BY c.closer_emp, c.close_cnt
     )
     SELECT
-      -- Günlük: kapanış toplamı
       (SELECT COUNT(*) FROM day_fc) AS total_close,
-      -- Günlük: KT ortalaması
       (SELECT AVG(first_sec) FROM day_fr_secs) AS avg_first_sec,
-      -- Günlük: KT SLA>60 sayısı
       (SELECT COUNT(*) FROM day_fr_secs WHERE first_sec > :sla_first) AS sla_first_cnt,
-      -- Top3: kapanış sayısına göre, eşlik eden KT ortalaması (kişisel)
-      (SELECT json_agg(json_build_object('employee_id', closer_emp,
-                                         'cnt', close_cnt,
-                                         'avg_first_emp', avg_first_emp)
-                       ORDER BY close_cnt DESC NULLS LAST, avg_first_emp ASC NULLS LAST
-                       LIMIT 3)
-         FROM close_emp_with_kt) AS top3
+      (SELECT json_agg(json_build_object('employee_id', closer_emp, 'cnt', close_cnt, 'avg_first_emp', avg_first_emp)
+                       ORDER BY close_cnt DESC NULLS LAST, avg_first_emp ASC NULLS LAST LIMIT 3)
+       FROM close_emp_with_kt) AS top3
     ;
     """
 
@@ -172,31 +155,21 @@ def build_bonus_daily_text(rows, target_day: date, sla_first_sec: int) -> str:
     return "\n".join(lines)
 
 def send_bonus_daily_summary(db: Session, target_day: date, sla_first_sec: int = SLA_FIRST_SEC_DEFAULT) -> bool:
-    """
-    Bonus için 'gün sonu' (dün) özetini gönderir.
-    - KT metriği: reply_first, SLA>60 sn.
-    - Kapanış ve Top3: first_close günü.
-    - Bot anahtarı kapalıysa göndermez.
-    - Aynı gün ikinci kez göndermez (admin_notifications_log).
-    """
-    # Aç/Kapa
     if not get_bool(db, BONUS_TG_ENABLED_KEY, False):
         return False
 
-    # Dedup
     period_key = target_day.strftime("%Y-%m-%d")
     if _already_sent(db, period_key):
         return False
 
     frm_utc, to_utc = _ist_day_edges_utc(target_day)
+
+    # !!! LIST PARAMETRELERİ İÇİN EXPANDING !!!
+    stmt = text(_sql_bonus_daily()).bindparams(bindparam("close_types", expanding=True))
+
     rows = db.execute(
-        text(_sql_bonus_daily()),
-        {
-            "frm": frm_utc,
-            "to": to_utc,
-            "close_types": CLOSE_TYPES,
-            "sla_first": sla_first_sec,
-        },
+        stmt,
+        {"frm": frm_utc, "to": to_utc, "close_types": list(CLOSE_TYPES), "sla_first": sla_first_sec},
     ).mappings().first()
 
     msg = build_bonus_daily_text(rows, target_day, sla_first_sec)
@@ -205,10 +178,8 @@ def send_bonus_daily_summary(db: Session, target_day: date, sla_first_sec: int =
         _mark_sent(db, period_key)
     return sent
 
-# --- BONUS 2 SAATLİK ÖZET (IST penceresi, hafif şablon) ----------------------
-from typing import Tuple
-
-def _ist_window_utc(end_ist: datetime, hours: int = 2) -> Tuple[datetime, datetime, str, str]:
+# ---------- 2 SAATLİK ÖZET (kısa şablon) ----------
+def _ist_window_utc(end_ist: datetime, hours: int = 2):
     end_ist = end_ist.astimezone(IST)
     start_ist = end_ist - timedelta(hours=hours)
     frm_utc = start_ist.astimezone(UTC)
@@ -235,11 +206,6 @@ def _mark_sent_periodic(db: Session, period_key: str) -> None:
     db.commit()
 
 def _sql_bonus_periodic():
-    """
-    2 saatlik pencere:
-      - KT metrikleri: reply_first.ts pencereye göre
-      - Kapanış/top2: first_close.ts pencereye göre
-    """
     return f"""
     WITH
     origin AS (
@@ -304,9 +270,7 @@ def _sql_bonus_periodic():
       (SELECT AVG(first_sec) FROM win_fr_secs) AS avg_first_sec,
       (SELECT COUNT(*) FROM win_fr_secs WHERE first_sec > :sla_first) AS sla_first_cnt,
       (SELECT COUNT(*) FROM win_fr_secs) AS first_cnt,
-      (SELECT json_agg(json_build_object('employee_id', closer_emp,
-                                         'cnt', close_cnt,
-                                         'avg_first_emp', avg_first_emp)
+      (SELECT json_agg(json_build_object('employee_id', closer_emp, 'cnt', close_cnt, 'avg_first_emp', avg_first_emp)
                        ORDER BY close_cnt DESC NULLS LAST, avg_first_emp ASC NULLS LAST
                        LIMIT 2)
        FROM close_emp_with_kt) AS top2
@@ -338,7 +302,6 @@ def build_bonus_periodic_text(rows, date_label: str, win_start: str, win_end: st
             avg_emp = t.get("avg_first_emp")
             lines.append(f"• {emp} — {cnt} işlem, Ø {int(round(avg_emp)) if avg_emp is not None else '—'} sn")
 
-    # Uyarı bloğu (opsiyonel)
     if sla_rate >= sla_warn_pct:
         lines.append("")
         lines.append(f"⚠️ SLA> {sla_first_sec} sn yüksek (%{sla_rate})")
@@ -351,13 +314,6 @@ def send_bonus_periodic_2h(
     sla_first_sec: int = SLA_FIRST_SEC_DEFAULT,
     sla_warn_pct: int = 25,
 ) -> bool:
-    """
-    Bonus için 2 saatlik pencere özeti (IST).
-    - KT metrikleri reply_first'e göre; SLA>60 sn sayımı 'İlk KT' üzerinden.
-    - Kapanış ve top2: first_close'a göre.
-    - Aç/Kapa kontrolü: bonus_tg_enabled
-    - Dedup: admin_notifications_log (type='periodic_2h', period_key='YYYY-MM-DDTHH:00' IST)
-    """
     if not get_bool(db, BONUS_TG_ENABLED_KEY, False):
         return False
 
@@ -368,9 +324,12 @@ def send_bonus_periodic_2h(
     if _already_sent_periodic(db, period_key):
         return False
 
+    # !!! LIST PARAMETRELERİ İÇİN EXPANDING !!!
+    stmt = text(_sql_bonus_periodic()).bindparams(bindparam("close_types", expanding=True))
+
     rows = db.execute(
-        text(_sql_bonus_periodic()),
-        {"frm": frm_utc, "to": to_utc, "close_types": CLOSE_TYPES, "sla_first": sla_first_sec},
+        stmt,
+        {"frm": frm_utc, "to": to_utc, "close_types": list(CLOSE_TYPES), "sla_first": sla_first_sec},
     ).mappings().first()
 
     msg = build_bonus_periodic_text(rows, date_label, win_start, win_end, sla_first_sec, sla_warn_pct)
