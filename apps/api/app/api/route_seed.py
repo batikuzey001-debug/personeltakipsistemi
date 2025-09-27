@@ -8,7 +8,6 @@ from typing import Optional
 
 from app.deps import get_db
 from app.core.config import settings
-from app.core.security import hash_password  # mevcut fonksiyonu önce deneriz
 
 router = APIRouter(prefix="/seed", tags=["seed"])
 
@@ -24,12 +23,18 @@ def _expect_secret(secret: str):
         raise HTTPException(status_code=401, detail="invalid seed secret")
 
 def _find_user_table(db: Session) -> Optional[str]:
-    # önce yaygın tablo adları
     for t in PRIORITY_TABLES:
-        if db.execute(text("SELECT 1 FROM information_schema.tables WHERE table_name=:t LIMIT 1"), {"t": t}).first():
-            if db.execute(text("SELECT 1 FROM information_schema.columns WHERE table_name=:t AND column_name ILIKE 'email' LIMIT 1"), {"t": t}).first():
+        r = db.execute(text(
+            "SELECT 1 FROM information_schema.tables WHERE table_name=:t LIMIT 1"
+        ), {"t": t}).first()
+        if r:
+            # email kolonu var mı bak
+            has_email = db.execute(text(
+                "SELECT 1 FROM information_schema.columns WHERE table_name=:t AND column_name ILIKE 'email' LIMIT 1"
+            ), {"t": t}).first()
+            if has_email:
                 return t
-    # sonra email kolonu olan ilk tablo
+    # fallback: herhangi bir 'email' kolonu olan tabloyu bul
     any_tab = db.execute(text(
         "SELECT table_name FROM information_schema.columns WHERE column_name ILIKE 'email' ORDER BY table_name LIMIT 1"
     )).scalar()
@@ -47,20 +52,27 @@ def _pick(cols: list[str], candidates: list[str]) -> Optional[str]:
             return c
     return None
 
-def _safe_hash(pw: str) -> str:
+def _safe_hash_force_bcrypt_sha256(pw: str) -> str:
     """
-    Önce mevcut hash_password() ile dener; bcrypt 72-byte hatasında otomatik
-    bcrypt_sha256'a düşer. Böylece seed asla patlamaz.
+    Garantili: bcrypt'in 72-byte sınırını aşmamak için önlem alır.
+    - Önce utf-8 byte'larını alır, 72 bayta truncate eder.
+    - Sonra passlib.hash.bcrypt_sha256 ile hash'ler.
     """
     try:
-        return hash_password(pw or "")
-    except Exception:
-        try:
-            from passlib.hash import bcrypt_sha256
-            return bcrypt_sha256.hash(pw or "")
-        except Exception as ex:
-            # hatayı görünür kıl
-            raise HTTPException(status_code=500, detail=f"seed error (hash): {ex}")
+        from passlib.hash import bcrypt_sha256
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"seed error (no passlib bcrypt_sha256): {ex}")
+
+    if not isinstance(pw, str):
+        pw = str(pw or "")
+    b = pw.encode("utf-8")
+    if len(b) > 72:
+        b = b[:72]
+    truncated = b.decode("utf-8", errors="ignore")
+    try:
+        return bcrypt_sha256.hash(truncated)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"seed error (hash): {ex}")
 
 @router.api_route("/super", methods=["GET", "POST"])
 def seed_super_admin(
@@ -71,9 +83,9 @@ def seed_super_admin(
     db: Session = Depends(get_db),
 ):
     """
-    Süper admin oluşturur/günceller (tablo & kolon adlarını otomatik keşfeder).
-    GET ile tarayıcıdan da çağrılabilir:
-      /seed/super?secret=seed-abc123!&email=super@admin.com&password=admin123
+    Süper admin oluşturur/günceller.
+    Örnek:
+      GET /seed/super?secret=seed-abc123!&email=super@admin.com&password=admin123
     """
     _expect_secret(secret)
 
@@ -92,10 +104,10 @@ def seed_super_admin(
         name_col = _pick(cols, NAME_COL_CAND)
 
         if not pwd_col:
-            # parola kolonu yoksa minimum viable: sadece email+role set edebiliriz
             raise HTTPException(status_code=500, detail=f"password column not found in {table}")
 
-        hpw = _safe_hash(password)
+        # Güvenli hash: truncate + bcrypt_sha256
+        hpw = _safe_hash_force_bcrypt_sha256(password or "")
 
         exists = db.execute(
             text(f"SELECT 1 FROM {table} WHERE email = :e LIMIT 1"),
@@ -124,7 +136,6 @@ def seed_super_admin(
 
         db.commit()
 
-        # geri bildirim
         row = db.execute(text(f"SELECT * FROM {table} WHERE email=:e"), {"e": email}).mappings().first()
         return {
             "ok": True,
