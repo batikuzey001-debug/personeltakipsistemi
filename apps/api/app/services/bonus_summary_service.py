@@ -1,0 +1,206 @@
+# apps/api/app/services/bonus_summary_service.py
+from __future__ import annotations
+from datetime import datetime, date
+from typing import Optional
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from pytz import timezone
+import requests
+
+from app.core.admin_tasks_config import ADMIN_TASKS_TG_TOKEN, ADMIN_TASKS_TG_CHAT_ID
+from app.services.admin_settings_service import get_bool, BONUS_TG_ENABLED_KEY
+
+IST = timezone("Europe/Istanbul")
+UTC = timezone("UTC")
+
+SLA_FIRST_SEC_DEFAULT = 60  # İlk KT SLA eşiği
+CLOSE_TYPES = ("approve", "reply_close", "reject")
+
+def _ist_day_edges_utc(d: date):
+    """IST gün sınırlarını UTC aralığına çevirir."""
+    start_ist = IST.localize(datetime(d.year, d.month, d.day, 0, 0, 0))
+    end_ist   = IST.localize(datetime(d.year, d.month, d.day, 23, 59, 59))
+    return start_ist.astimezone(UTC), end_ist.astimezone(UTC)
+
+def _tg_send(text_msg: str) -> bool:
+    if not ADMIN_TASKS_TG_TOKEN or not ADMIN_TASKS_TG_CHAT_ID:
+        return False
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{ADMIN_TASKS_TG_TOKEN}/sendMessage",
+            json={"chat_id": int(ADMIN_TASKS_TG_CHAT_ID), "text": text_msg},
+            timeout=5,
+        )
+        return True
+    except Exception:
+        return False
+
+def _already_sent(db: Session, period_key: str) -> bool:
+    q = text("""
+        SELECT 1 FROM admin_notifications_log
+        WHERE channel='bonus' AND type='daily' AND period_key=:pk
+        LIMIT 1
+    """)
+    return db.execute(q, {"pk": period_key}).first() is not None
+
+def _mark_sent(db: Session, period_key: str) -> None:
+    db.execute(
+        text("""
+            INSERT INTO admin_notifications_log (channel,type,period_key)
+            VALUES ('bonus','daily',:pk)
+            ON CONFLICT (channel,type,period_key) DO NOTHING
+        """),
+        {"pk": period_key},
+    )
+    db.commit()
+
+def _mmss(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "—"
+    s = int(round(max(0.0, seconds)))
+    return f"{s//60:02d}:{s%60:02d}"
+
+def _sql_bonus_daily():
+    """
+    Günlük BONUS özeti:
+    - KT (reply_first) metrikleri: reply_first.ts gün penceresinde
+    - Kapanış sayıları/top3: first_close.ts gün penceresinde
+    """
+    return f"""
+    WITH
+    origin AS (
+      SELECT e.correlation_id AS corr, MIN(e.ts) AS origin_ts
+      FROM events e
+      WHERE e.source_channel='bonus' AND e.type='origin'
+      GROUP BY 1
+    ),
+    fr AS (
+      SELECT e.correlation_id AS corr, MIN(e.ts) AS first_ts
+      FROM events e
+      WHERE e.source_channel='bonus' AND e.type='reply_first'
+      GROUP BY 1
+    ),
+    fc AS (
+      SELECT DISTINCT ON (e.correlation_id)
+             e.correlation_id AS corr,
+             e.employee_id    AS closer_emp,
+             e.ts             AS close_ts
+      FROM events e
+      WHERE e.source_channel='bonus' AND e.type IN :close_types
+      ORDER BY e.correlation_id, e.ts
+    ),
+    -- Günlük KT havuzu: reply_first günü
+    day_fr AS (
+      SELECT fr.corr, fr.first_ts, o.origin_ts
+      FROM fr
+      JOIN origin o ON o.corr=fr.corr
+      WHERE fr.first_ts >= :frm AND fr.first_ts <= :to
+    ),
+    day_fr_secs AS (
+      SELECT EXTRACT(EPOCH FROM (first_ts - origin_ts)) AS first_sec
+      FROM day_fr
+      WHERE first_ts IS NOT NULL AND origin_ts IS NOT NULL
+    ),
+    -- Günlük kapanış havuzu: first_close günü
+    day_fc AS (
+      SELECT fc.corr, fc.closer_emp, fc.close_ts
+      FROM fc
+      WHERE fc.close_ts >= :frm AND fc.close_ts <= :to
+    ),
+    -- Kişi bazında kapanış sayısı
+    close_emp AS (
+      SELECT closer_emp, COUNT(*) AS close_cnt
+      FROM day_fc
+      GROUP BY closer_emp
+    ),
+    -- Kişi bazında KT ortalaması (kapanan corr'lar üzerinden KT'yi eşleştir)
+    fr_on_fc AS (
+      SELECT dfc.closer_emp,
+             EXTRACT(EPOCH FROM (dfr.first_ts - dfr.origin_ts)) AS first_sec
+      FROM day_fc dfc
+      JOIN day_fr dfr ON dfr.corr = dfc.corr
+      WHERE dfr.first_ts IS NOT NULL AND dfr.origin_ts IS NOT NULL
+    ),
+    close_emp_with_kt AS (
+      SELECT c.closer_emp,
+             c.close_cnt,
+             AVG(f.first_sec) AS avg_first_emp
+      FROM close_emp c
+      LEFT JOIN fr_on_fc f ON f.closer_emp = c.closer_emp
+      GROUP BY c.closer_emp, c.close_cnt
+    )
+    SELECT
+      -- Günlük: kapanış toplamı
+      (SELECT COUNT(*) FROM day_fc) AS total_close,
+      -- Günlük: KT ortalaması
+      (SELECT AVG(first_sec) FROM day_fr_secs) AS avg_first_sec,
+      -- Günlük: KT SLA>60 sayısı
+      (SELECT COUNT(*) FROM day_fr_secs WHERE first_sec > :sla_first) AS sla_first_cnt,
+      -- Top3: kapanış sayısına göre, eşlik eden KT ortalaması (kişisel)
+      (SELECT json_agg(json_build_object('employee_id', closer_emp,
+                                         'cnt', close_cnt,
+                                         'avg_first_emp', avg_first_emp)
+                       ORDER BY close_cnt DESC NULLS LAST, avg_first_emp ASC NULLS LAST
+                       LIMIT 3)
+         FROM close_emp_with_kt) AS top3
+    ;
+    """
+
+def build_bonus_daily_text(rows, target_day: date, sla_first_sec: int) -> str:
+    total = int(rows["total_close"] or 0)
+    avg_first_sec = rows["avg_first_sec"]
+    sla_first_cnt = int(rows["sla_first_cnt"] or 0)
+    top3 = rows["top3"] or []
+
+    date_str = target_day.strftime("%d.%m.%Y")
+    lines = [
+        f"📣 BONUS GÜN SONU — {date_str}",
+        f"• Toplam Kapanış: {total}",
+        f"• Ø İlk Yanıt: {int(round(avg_first_sec)) if avg_first_sec is not None else '—'} sn",
+        f"• SLA>{sla_first_sec} sn (İlk Yanıt): {sla_first_cnt}",
+        "",
+        "İlk 3:",
+    ]
+    if top3:
+        for t in top3:
+            emp = t.get("employee_id") or "-"
+            cnt = int(t.get("cnt") or 0)
+            avg_emp = t.get("avg_first_emp")
+            lines.append(f"• {emp} — {cnt} işlem, Ø İlk Yanıt {int(round(avg_emp)) if avg_emp is not None else '—'} sn")
+    else:
+        lines.append("• —")
+    return "\n".join(lines)
+
+def send_bonus_daily_summary(db: Session, target_day: date, sla_first_sec: int = SLA_FIRST_SEC_DEFAULT) -> bool:
+    """
+    Bonus için 'gün sonu' (dün) özetini gönderir.
+    - KT metriği: reply_first, SLA>60 sn.
+    - Kapanış ve Top3: first_close günü.
+    - Bot anahtarı kapalıysa göndermez.
+    - Aynı gün ikinci kez göndermez (admin_notifications_log).
+    """
+    # Aç/Kapa
+    if not get_bool(db, BONUS_TG_ENABLED_KEY, False):
+        return False
+
+    # Dedup
+    period_key = target_day.strftime("%Y-%m-%d")
+    if _already_sent(db, period_key):
+        return False
+
+    frm_utc, to_utc = _ist_day_edges_utc(target_day)
+    rows = db.execute(
+        text(_sql_bonus_daily()),
+        {
+            "frm": frm_utc,
+            "to": to_utc,
+            "close_types": CLOSE_TYPES,
+            "sla_first": sla_first_sec,
+        },
+    ).mappings().first()
+
+    msg = build_bonus_daily_text(rows, target_day, sla_first_sec)
+    sent = _tg_send(msg)
+    if sent:
+        _mark_sent(db, period_key)
+    return sent
