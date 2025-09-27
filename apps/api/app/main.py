@@ -33,6 +33,8 @@ from app.api.routes_reports import router as reports_router
 from app.api.routes_admin_tasks import router as admin_tasks_router
 from app.api.routes_admin_bot import router as admin_bot_router
 from app.api.routes_admin_notifications import router as admin_notify_router
+from app.api.route_seed import router as seed_router  # ← SEED router
+
 
 # Scheduler (geciken görev tarayıcı + attendance + bonus daily)
 from app.scheduler.admin_tasks_jobs import start_scheduler
@@ -149,3 +151,4 @@ app.include_router(reports_router)
 app.include_router(admin_tasks_router)
 app.include_router(admin_bot_router)       # Bot İşlemleri
 app.include_router(admin_notify_router)    # Bildirim Yönetimi
+app.include_router(seed_router)  # ← /seed/* uçları geri geldi
