@@ -135,7 +135,7 @@ def run_startup_migrations():
 def healthz():
     return {"ok": True}
 
-# Debug amaçlı: tüm yolları gör
+# Debug amaçlı: kayıtlı tüm yolları gör
 @app.get("/_routes")
 def list_routes():
     return sorted({f"{getattr(r, 'methods', {'GET'})} {getattr(r, 'path', getattr(r, 'path_regex', ''))}" for r in app.router.routes})
