@@ -1,4 +1,19 @@
-# apps/api/app/api/routes_admin_bot.py  (yalnızca /trigger/bonus/daily fonksiyonunu değiştir)
+# apps/api/app/api/routes_admin_bot.py
+from __future__ import annotations
+from datetime import datetime, timedelta, date
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from pytz import timezone
+
+from app.deps import get_db
+from app.services.admin_settings_service import get_bool, BONUS_TG_ENABLED_KEY
+from app.services.bonus_summary_service import compute_bonus_daily_context
+from app.services.admin_notifications_service import render, send_text
+
+IST = timezone("Europe/Istanbul")
+
+router = APIRouter(prefix="/admin-bot", tags=["admin_bot"])
+
 
 @router.post("/trigger/bonus/daily")
 def trigger_bonus_daily(
@@ -6,11 +21,9 @@ def trigger_bonus_daily(
     sla_first_sec: int = Query(60, ge=1, le=3600),
     db: Session = Depends(get_db),
 ):
-    # Bildirim açık mı?
     if not get_bool(db, BONUS_TG_ENABLED_KEY, False):
         raise HTTPException(status_code=400, detail="bonus notifications disabled")
 
-    # Hedef gün (IST)
     now_ist = datetime.now(IST)
     if d:
         try:
@@ -21,10 +34,8 @@ def trigger_bonus_daily(
     else:
         target = (now_ist - timedelta(days=1)).date()
 
-    # Metrikler
     ctx = compute_bonus_daily_context(db, target, sla_first_sec=sla_first_sec)
 
-    # Metin bloklarını oluştur
     slow_text = "\n".join(
         [f"- {i.get('full_name','-')} — {int(i.get('gt60_cnt') or 0)} işlem" for i in ctx["slow_list"]]
     ) or "- —"
@@ -37,7 +48,6 @@ def trigger_bonus_daily(
         ]
     ) or "- —"
 
-    # Render context
     message_ctx = {
         "date": ctx["date_label"],
         "total_close": ctx["total_close"],
@@ -47,7 +57,6 @@ def trigger_bonus_daily(
         "per_emp_text": per_emp_text,
     }
 
-    # ÇİZGİSİZ ve BOLD fallback (yeni stil)
     fallback = (
         "📊 *BONUS GÜN SONU RAPORU — {date}*\n"
         f"- *Toplam Kapanış:* {{total_close}}\n"
@@ -59,7 +68,6 @@ def trigger_bonus_daily(
         "{per_emp_text}"
     )
 
-    # Not: 'bonus_daily_v2' DB'de yoksa fallback kesin devreye girer
     text_msg = render(db, "bonus_daily_v2", message_ctx, fallback, channel="bonus")
 
     if not send_text(text_msg):
