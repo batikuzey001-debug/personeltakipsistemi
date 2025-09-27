@@ -9,15 +9,15 @@ from app.db.base import Base
 from app.db.session import engine
 
 # MODELLER (create_all tüm tabloları görsün)
-import app.models.events        # raw_messages, events
-import app.models.facts         # facts_daily, facts_monthly
-import app.models.identities    # employee_identities
-import app.models.models        # employees (department + kart alanları)
+import app.models.events                 # raw_messages, events
+import app.models.facts                  # facts_daily, facts_monthly
+import app.models.identities             # employee_identities
+import app.models.models                 # employees (department + kart alanları)
 
 # Admin & Bot modelleri
-import app.db.models_admin_tasks        # admin_tasks, admin_task_templates
-import app.db.models_admin_settings     # admin_settings (bot ayarları)
-import app.db.models_admin_notifications  # admin_notifications (bildirim şablonları)
+import app.db.models_admin_tasks         # admin_tasks, admin_task_templates
+import app.db.models_admin_settings      # admin_settings (bot ayarları)
+import app.db.models_admin_notifications # admin_notifications (bildirim şablonları)
 
 # ROUTERLAR
 from app.api.routes_auth import router as auth_router
@@ -32,9 +32,9 @@ from app.api.routes_employee_view import router as employee_view_router
 from app.api.routes_reports import router as reports_router
 from app.api.routes_admin_tasks import router as admin_tasks_router
 from app.api.routes_admin_bot import router as admin_bot_router
-from app.api.routes_admin_notifications import router as admin_notify_router  # Bildirim Yönetimi
+from app.api.routes_admin_notifications import router as admin_notify_router
 
-# Scheduler (geciken görev tarayıcı + attendance)
+# Scheduler (geciken görev tarayıcı + attendance + bonus daily)
 from app.scheduler.admin_tasks_jobs import start_scheduler
 
 # V1: hızlı başlat (prod'da Alembic'e geçilecek)
@@ -84,16 +84,12 @@ MIGRATIONS_SQL = [
     " value TEXT NOT NULL,"
     " updated_at TIMESTAMP NOT NULL DEFAULT NOW()"
     ");",
-    "INSERT INTO admin_settings(key,value) VALUES ('admin_tasks_tg_enabled','0') "
-    "ON CONFLICT (key) DO NOTHING;",
-    "INSERT INTO admin_settings(key,value) VALUES ('bonus_tg_enabled','0') "
-    "ON CONFLICT (key) DO NOTHING;",
-    "INSERT INTO admin_settings(key,value) VALUES ('finance_tg_enabled','0') "
-    "ON CONFLICT (key) DO NOTHING;",
-    "INSERT INTO admin_settings(key,value) VALUES ('attendance_tg_enabled','0') "
-    "ON CONFLICT (key) DO NOTHING;",
+    "INSERT INTO admin_settings(key,value) VALUES ('admin_tasks_tg_enabled','0') ON CONFLICT (key) DO NOTHING;",
+    "INSERT INTO admin_settings(key,value) VALUES ('bonus_tg_enabled','0')        ON CONFLICT (key) DO NOTHING;",
+    "INSERT INTO admin_settings(key,value) VALUES ('finance_tg_enabled','0')      ON CONFLICT (key) DO NOTHING;",
+    "INSERT INTO admin_settings(key,value) VALUES ('attendance_tg_enabled','0')   ON CONFLICT (key) DO NOTHING;",
 
-    # admin_notifications tablosu
+    # admin_notifications tablosu (şablonlar)
     "CREATE TABLE IF NOT EXISTS admin_notifications ("
     " id SERIAL PRIMARY KEY,"
     " channel VARCHAR(32) NOT NULL,"
@@ -102,6 +98,16 @@ MIGRATIONS_SQL = [
     " is_active BOOLEAN NOT NULL DEFAULT TRUE,"
     " created_at TIMESTAMP NOT NULL DEFAULT NOW(),"
     " updated_at TIMESTAMP NOT NULL DEFAULT NOW()"
+    ");",
+
+    # admin_notifications_log (tekrarsız gönderim için)
+    "CREATE TABLE IF NOT EXISTS admin_notifications_log ("
+    " id SERIAL PRIMARY KEY,"
+    " channel VARCHAR(32) NOT NULL,"
+    " type VARCHAR(32) NOT NULL,"
+    " period_key VARCHAR(64) NOT NULL,"
+    " sent_at TIMESTAMP NOT NULL DEFAULT NOW(),"
+    " UNIQUE(channel, type, period_key)"
     ");",
 ]
 
@@ -115,10 +121,10 @@ def run_startup_migrations():
             except Exception as e:
                 print(f"[startup-migration] skip/err: {e}")
 
-    # Admin Görevleri + Attendance: tarayıcıyı başlat (çoklu worker için guard)
+    # Scheduler: çoklu worker varsa RUN_SCHEDULER=0 ile kapatılabilir
     try:
         if os.getenv("RUN_SCHEDULER", "1") == "1":
-            start_scheduler()  # interval 5 dk; Europe/Istanbul
+            start_scheduler()  # Europe/Istanbul TZ
             print("[scheduler] started")
         else:
             print("[scheduler] disabled by RUN_SCHEDULER")
@@ -141,5 +147,5 @@ app.include_router(identities_router)
 app.include_router(employee_view_router)
 app.include_router(reports_router)
 app.include_router(admin_tasks_router)
-app.include_router(admin_bot_router)       # Bot İşlemleri uçları
-app.include_router(admin_notify_router)    # Bildirim Yönetimi uçları
+app.include_router(admin_bot_router)       # Bot İşlemleri
+app.include_router(admin_notify_router)    # Bildirim Yönetimi
