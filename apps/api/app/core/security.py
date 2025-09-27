@@ -4,60 +4,35 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
-from passlib.context import CryptContext
 from jose import jwt
+from passlib.context import CryptContext
 
 from app.core.config import settings
 
-# -------------------------------------------------------------------
-# Parola hash/doğrulama
-# - bcrypt_sha256: 72 byte sınırını kaldırır (SHA256 + bcrypt)
-# - bcrypt: eski kayıtlar için geriye dönük doğrulama
-# -------------------------------------------------------------------
-pwd_context = CryptContext(
-    schemes=["bcrypt_sha256", "bcrypt"],
-    deprecated="auto",
-)
+# Not: bcrypt_sha256 önce SHA256 uygular, sonra bcrypt; 72-byte sınırını aşan şifreleri güvenli destekler.
+# "bcrypt" şemasını listede tutuyoruz ki eski hash'lerle de doğrulama çalışsın.
+pwd_ctx = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
 
-MAX_PASSWORD_LEN = 4096  # isteğe bağlı üst sınır
+# Eski KULLANIMLA uyum: fonksiyon adları ve imzalar aynen korunur
+def hash_password(raw: str) -> str:
+    """Yeni şifreleri hash'ler (uzun şifre desteği). Eski bcrypt hash'leri doğrulamada geçerlidir."""
+    if not isinstance(raw, str):
+        raw = str(raw or "")
+    return pwd_ctx.hash(raw)
 
-
-def get_password_hash(password: str) -> str:
-    if not isinstance(password, str):
-        password = str(password or "")
-    if len(password) > MAX_PASSWORD_LEN:
-        password = password[:MAX_PASSWORD_LEN]
-    return pwd_context.hash(password)
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
+def verify_password(raw: str, hashed: str) -> bool:
+    """Şifre doğrulama: bcrypt_sha256 + (geriye dönük) bcrypt"""
     try:
-        return pwd_context.verify(plain_password or "", hashed_password or "")
+        return pwd_ctx.verify(raw or "", hashed or "")
     except Exception:
-        # beklenmedik formatlarda 500 atmamak için False
         return False
 
-
-# ---- GERİYE DÖNÜK UYUMLULUK (route_seed.py için) -------------------
-# Eski kod 'hash_password' ismini import ediyor; alias olarak sağlayalım.
-def hash_password(password: str) -> str:
-    return get_password_hash(password)
-
-
-# -------------------------------------------------------------------
-# JWT Access Token üretimi
-# routes_auth.py bu fonksiyonu import ediyor: create_access_token
-# -------------------------------------------------------------------
-def create_access_token(
-    data: dict,
-    expires_delta: Optional[timedelta] = None,
-) -> str:
+def create_access_token(sub: str, role: str, expires_minutes: Optional[int] = None) -> str:
     """
-    Varsayılan olarak 12 saatlik access token üretir.
-    settings.JWT_SECRET ve settings.JWT_ALGO kullanılır.
+    JWT access token üretir (eski imza ile). Varsayılan süre settings.ACCESS_TOKEN_EXPIRE_MINUTES.
+    Payload: {"sub": <email/id>, "role": <rol>, "exp": <utc>}  (önceki yapıyla uyumlu)
     """
-    to_encode = dict(data or {})
-    expire = datetime.utcnow() + (expires_delta or timedelta(hours=12))
-    to_encode.update({"exp": expire})
-    token = jwt.encode(to_encode, settings.JWT_SECRET, algorithm=settings.JWT_ALGO)
-    return token
+    minutes = expires_minutes or getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 720)
+    expire = datetime.utcnow() + timedelta(minutes=minutes)
+    payload = {"sub": sub, "role": role, "exp": expire}
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGO)
