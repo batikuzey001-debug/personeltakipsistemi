@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, date
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import sessionmaker
 from pytz import timezone
+from app.services.bonus_summary_service import send_bonus_periodic_2h
+
 
 from app.db.session import engine
 from app.services.admin_tasks_service import (
@@ -83,6 +85,11 @@ def job_bonus_day_end_0015(db):
     d = date(y.year, y.month, y.day)
     send_bonus_daily_summary(db, d, sla_first_sec=60)
 
+@_with_db
+def job_bonus_periodic_2h(db):
+    end_ist = datetime.now(IST)  # son 2 saat penceresi
+    send_bonus_periodic_2h(db, window_end_ist=end_ist, sla_first_sec=60, sla_warn_pct=25)
+
 # ---- Scheduler başlatma ----
 def start_scheduler():
     # Periyodik gecikme taraması
@@ -93,6 +100,13 @@ def start_scheduler():
     scheduler.add_job(job_shift_end_oglen, "cron", hour=20, minute=0, id="shift_end_oglen", replace_existing=True)
     scheduler.add_job(job_shift_end_aksam, "cron", hour=0, minute=0, id="shift_end_aksam", replace_existing=True)
     scheduler.add_job(job_shift_end_gece, "cron", hour=7, minute=59, id="shift_end_gece", replace_existing=True)
+    scheduler.add_job(
+    job_bonus_periodic_2h,
+    "cron",
+    hour="0,2,4,6,8,10,12,14,16,18,20,22",
+    minute=0,
+    id="bonus_periodic_2h",
+    replace_existing=True,
 
     # Mesai (attendance) günlük kontrol (IST)
     scheduler.add_job(job_attendance_daily_2000, "cron", hour=20, minute=0, id="attendance_2000", replace_existing=True)
