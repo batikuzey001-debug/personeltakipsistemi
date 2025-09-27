@@ -11,10 +11,14 @@ from app.services.admin_tasks_service import (
     send_day_end_report,
 )
 from app.services.attendance_service import attendance_check_and_report
-from app.services.bonus_summary_service import (
-    send_bonus_daily_summary,
-    send_bonus_periodic_2h,
+
+# BONUS raporları artık "metrics + template + notify" üçlüsüyle çalışıyor
+from app.services.bonus_metrics_service import (
+    compute_bonus_daily_context,
+    compute_bonus_periodic_context,
 )
+from app.services.template_engine import render
+from app.services.telegram_notify import send_text
 
 # ---- DB session factory ----
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -79,18 +83,92 @@ def job_attendance_daily_2000(db):
     d = date(now.year, now.month, now.day)
     attendance_check_and_report(db, d)
 
+# ---------------- BONUS: Gün Sonu (00:15, dün) ----------------
 @_with_db
 def job_bonus_day_end_0015(db):
-    # BONUS gün sonu — 00:15 IST → bir önceki gün, SLA(İlk KT)>60 sn
+    # Dün için metrikleri hesapla
     y = datetime.now(IST) - timedelta(days=1)
-    d = date(y.year, y.month, y.day)
-    send_bonus_daily_summary(db, d, sla_first_sec=60)
+    target = date(y.year, y.month, y.day)
+    ctx = compute_bonus_daily_context(db, target, sla_first_sec=60)
 
+    # listeleri stringe çevir
+    slow_text = "\n".join(
+        [f"• {i.get('full_name','-')} — {int(i.get('gt60_cnt') or 0)} işlem" for i in ctx["slow_list"]]
+    ) or "• —"
+    per_emp_text = "\n".join(
+        [
+            f"• {i.get('full_name','-')} — {int(i.get('close_cnt') or 0)} işlem • Ø "
+            f"{(str(int(round(i['avg_first_emp'])))+' sn') if i.get('avg_first_emp') is not None else '—'}"
+            for i in ctx["per_emp"]
+        ]
+    ) or "• —"
+
+    message_ctx = {
+        "date": ctx["date_label"],
+        "total_close": ctx["total_close"],
+        "avg_first": ctx["avg_first_sec"] if ctx["avg_first_sec"] is not None else "—",
+        "gt60_total": ctx["gt60_total"],
+        "slow_list_text": slow_text,
+        "per_emp_text": per_emp_text,
+    }
+
+    # DB'de şablon yoksa kullanılacak fallback metin
+    fallback = (
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📣 BONUS • Gün Sonu Raporu\n"
+        "🗓️ {date}\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 Genel\n"
+        "• Toplam Kapanış: {total_close}\n"
+        "• Ø İlk Yanıt: {avg_first} sn\n"
+        "• 60 sn üzeri işlemler: {gt60_total}\n\n"
+        "⚠️ Geç Yanıt Verenler (60 sn üzeri)\n"
+        "{slow_list_text}\n\n"
+        "👥 Personel Bazlı İşlem Sayıları\n"
+        "{per_emp_text}"
+    )
+
+    text_msg = render(db, "bonus_daily_v1", message_ctx, fallback, channel="bonus")
+    send_text(text_msg)
+
+# ---------------- BONUS: 2 saatlik (çift saatlerde) ----------------
 @_with_db
 def job_bonus_periodic_2h(db):
-    # BONUS 2 saatlik özet — ÇİFT saatlerde
     end_ist = datetime.now(IST)
-    send_bonus_periodic_2h(db, window_end_ist=end_ist, sla_first_sec=60, sla_warn_pct=25)
+    ctx = compute_bonus_periodic_context(db, end_ist, hours=2, sla_first_sec=60)
+
+    top2_text = "\n".join(
+        [
+            f"• {i.get('full_name','-')} — {int(i.get('cnt') or 0)} işlem • Ø "
+            f"{(str(int(round(i['avg_first_emp'])))+' sn') if i.get('avg_first_emp') is not None else '—'}"
+            for i in ctx["top2"]
+        ]
+    ) or "• —"
+
+    message_ctx = {
+        "date": ctx["date_label"],
+        "win_start": ctx["win_start"],
+        "win_end": ctx["win_end"],
+        "total_close": ctx["total_close"],
+        "avg_first": ctx["avg_first_sec"] if ctx["avg_first_sec"] is not None else "—",
+        "gt60_total": ctx["gt60_total"],
+        "gt60_rate": ctx["gt60_rate"],
+        "top2_text": top2_text,
+        "warn_line": (f"⚠️ 60 sn üzeri oranı yüksek (%{ctx['gt60_rate']})" if ctx["gt60_rate"] >= 25 else ""),
+    }
+
+    fallback = (
+        "⏱️ BONUS • {date} {win_start}-{win_end}\n\n"
+        "• Kapanış: {total_close}\n"
+        "• Ø İlk KT: {avg_first} sn\n"
+        "• 60 sn üzeri işlemler: {gt60_total} (%{gt60_rate})\n\n"
+        "İyi Gidenler\n"
+        "{top2_text}\n"
+        "{warn_line}"
+    )
+
+    text_msg = render(db, "bonus_periodic_v1", message_ctx, fallback, channel="bonus")
+    send_text(text_msg)
 
 # ---- Scheduler başlatma ----
 def start_scheduler():
@@ -147,7 +225,7 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # BONUS: gün sonu (00:15 IST) — dünü raporla
+    # BONUS: gün sonu (00:15 IST) — dünü raporla (metrics+template)
     scheduler.add_job(
         job_bonus_day_end_0015,
         "cron",
@@ -157,7 +235,7 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # BONUS: 2 saatlik özet — her çift saatte
+    # BONUS: 2 saatlik özet — her çift saatte (metrics+template)
     scheduler.add_job(
         job_bonus_periodic_2h,
         "cron",
