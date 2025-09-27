@@ -1,16 +1,23 @@
 # apps/api/requirements.txt
+
+# --- Core API ---
 fastapi
 uvicorn[standard]
 sqlalchemy>=2.0
-psycopg2-binary
+psycopg2-binary>=2.9,<3.0
 pydantic
 pydantic-settings
-passlib[bcrypt]
-python-jose[cryptography]
-python-dateutil
 email-validator
+python-dateutil
 
-# Admin Görevleri için ek bağımlılıklar
+# --- Auth / Crypto ---
+# passlib[bcrypt] -> hem bcrypt backend'ini hem de passlib'i getirir.
+# bcrypt'i ayrıca ekliyoruz; bazı build ortamlarında explicit gerebiliyor.
+passlib[bcrypt]==1.7.4
+bcrypt>=4.0,<5
+python-jose[cryptography]==3.3.0
+
+# --- HTTP / Schedulers / TZ ---
+requests==2.32.3
 APScheduler==3.10.4
 pytz==2024.1
-requests==2.32.3
