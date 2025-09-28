@@ -31,45 +31,12 @@ const SLOT_KEYS = Array.from({ length: 24 }, (_, h) => {
   return `${s}-${e}`;
 });
 
-/* --- Hücre bileşeni: her hücreye benzersiz key+name/id --- */
-function CellSelect({
-  cellKey,
-  value,
-  disabled,
-  onChange,
-}: {
-  cellKey: string; // "empId|YYYY-MM-DD"
-  value: string;
-  disabled: boolean;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <select
-      key={`sel-${cellKey}-${value}`}                // remount
-      id={`sel-${cellKey}`}                          // unique id
-      name={`sel-${cellKey}`}                        // unique name → autofill engeli
-      autoComplete="off"                             // autofill kapat
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      disabled={disabled}
-      style={{ width: "100%" }}
-    >
-      <option value="OFF">OFF</option>
-      {SLOT_KEYS.map((k) => (
-        <option key={`opt-${cellKey}-${k}`} value={k}>
-          {k}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-/* ---- Ana bileşen ---- */
 export default function ShiftPlanner() {
   // Hafta
   const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const weekStartISO = toISODate(monday);
   const weekEnd = addDays(monday, 6);
+  const weekTitle = `${fmtTR.format(monday)}  ➜  ${fmtTR.format(weekEnd)}`;
   const days = useMemo(() => {
     const labels = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cts", "Paz"];
     return Array.from({ length: 7 }, (_, i) => ({ label: labels[i], iso: toISODate(addDays(monday, i)) }));
@@ -80,7 +47,7 @@ export default function ShiftPlanner() {
   const [week, setWeek] = useState<ShiftWeek | null>(null);
   const [defs, setDefs] = useState<Record<string, number>>({}); // "HH:MM-HH:MM" -> shift_def_id
 
-  // Hücre sözlüğü: "empId|date" -> "OFF" veya "HH:MM-HH:MM"
+  // Hücre sözlüğü: "EMP|YYYY-MM-DD" -> "OFF" veya "HH:MM-HH:MM"
   const [cells, setCells] = useState<Record<string, string>>({});
 
   // UI
@@ -103,7 +70,7 @@ export default function ShiftPlanner() {
     setOpenDept(o);
   }, [byDept.length]);
 
-  // Backend'de /shifts seed ve id eşlemesi
+  // Backend /shifts seed + id eşlemesi
   async function ensureDefs(): Promise<Record<string, number>> {
     const map: Record<string, number> = {};
     let existing: ShiftDef[] = [];
@@ -135,15 +102,11 @@ export default function ShiftPlanner() {
       setWeek(w);
       setDefs(map);
 
-      // tüm hücreleri OFF
       const dict: Record<string, string> = {};
       for (const emp of e) for (const d of days) dict[`${emp.id}|${d.iso}`] = "OFF";
-      // mevcut atamalar
       for (const row of a) {
-        const key = `${row.employee_id}|${row.date}`;
-        dict[key] = row.status === "ON" && row.shift_def_id != null
-          ? Object.keys(map).find(k => map[k] === row.shift_def_id) || "OFF"
-          : "OFF";
+        const uiKey = row.shift_def_id ? Object.keys(map).find(k => map[k] === row.shift_def_id) : undefined;
+        dict[`${row.employee_id}|${row.date}`] = row.status === "ON" && uiKey ? uiKey : "OFF";
       }
       setCells(dict);
     } catch (x: any) {
@@ -158,24 +121,21 @@ export default function ShiftPlanner() {
     setCells(prev => (prev[k] === value ? prev : { ...prev, [k]: value }));
   }
 
-  // Kaydet
+  // Kaydet — ÇOK ÖNEMLİ: emps ve days üzerinden payload kurulur. employee_id DAİMA set edilir.
   async function save() {
     setSaving(true); setErr(null);
     try {
       const payload: Assign[] = [];
-      for (const [dept, list] of byDept) {
-        for (const emp of list) {
-          for (const d of days) {
-            const k = `${emp.id}|${d.iso}`;
-            const v = cells[k] ?? "OFF";
-            payload.push({
-              employee_id: emp.id,
-              date: d.iso,
-              week_start: weekStartISO,
-              shift_def_id: v === "OFF" ? null : (defs[v] ?? null),
-              status: v === "OFF" ? "OFF" : "ON",
-            });
-          }
+      for (const emp of emps) {
+        for (const d of days) {
+          const v = cells[`${emp.id}|${d.iso}`] || "OFF";
+          payload.push({
+            employee_id: emp.id,                            // ← kritik
+            date: d.iso,
+            week_start: weekStartISO,
+            shift_def_id: v === "OFF" ? null : (defs[v] ?? null),
+            status: v === "OFF" ? "OFF" : "ON",
+          });
         }
       }
       await api("/shift-assignments/bulk", { method: "POST", body: JSON.stringify(payload) });
@@ -186,7 +146,6 @@ export default function ShiftPlanner() {
     } finally { setSaving(false); }
   }
 
-  // Publish
   async function publish() {
     if (!confirm("Bu haftayı yayınla ve kilitle?")) return;
     try { const w = await api<ShiftWeek>(`/shift-weeks/${weekStartISO}/publish`, { method: "POST" }); setWeek(w); setMsg("Hafta yayınlandı"); setTimeout(() => setMsg(""), 1200); }
@@ -197,7 +156,7 @@ export default function ShiftPlanner() {
 
   // UI
   const page: React.CSSProperties = { maxWidth: 1280, margin: "0 auto", padding: 16, display: "grid", gap: 12 };
-  const card: React.CSSProperties = { border: "1px solid #eef0f4", borderRadius: 12, background: "#fff", boxShadow: "0 6px 24px rgba(16,24,40,0.04)" };
+  const card: React.CSSProperties = { border: "1px solid "#eef0f4", borderRadius: 12, background: "#fff", boxShadow: "0 6px 24px rgba(16,24,40,0.04)" };
   const badge: React.CSSProperties = { padding: "2px 8px", borderRadius: 999, fontWeight: 800, fontSize: 12, background: isDraft ? "#fff7ed" : "#ecfdf5", border: `1px solid ${isDraft ? "#fdba74" : "#a7f3d0"}`, color: isDraft ? "#9a3412" : "#065f46" };
 
   return (
@@ -206,7 +165,7 @@ export default function ShiftPlanner() {
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button onClick={() => setMonday(addDays(monday, -7))}>◀ Önceki</button>
           <div>
-            <div style={{ fontSize: 22, fontWeight: 900 }}>{fmtTR.format(monday)}  ➜  {fmtTR.format(weekEnd)}</div>
+            <div style={{ fontSize: 22, fontWeight: 900 }}>{weekTitle}</div>
             <div style={{ fontSize: 12, color: "#6b7280" }}>Hafta başlangıcı (Pzt): {weekStartISO}</div>
           </div>
           <button onClick={() => setMonday(addDays(monday, 7))}>Sonraki ▶</button>
@@ -256,12 +215,20 @@ export default function ShiftPlanner() {
                       const value = cells[key] ?? "OFF";
                       return (
                         <div key={key} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
-                          <CellSelect
-                            cellKey={key}
+                          <select
+                            key={`sel-${key}-${value}`}                 // remount
+                            id={`sel-${key}`} name={`sel-${key}`}       // benzersiz
+                            autoComplete="off"
                             value={value}
+                            onChange={(e) => setCell(emp.id, d.iso, e.target.value)}
                             disabled={!isDraft}
-                            onChange={(v) => setCell(emp.id, d.iso, v)}
-                          />
+                            style={{ width: "100%" }}
+                          >
+                            <option value="OFF">OFF</option>
+                            {SLOT_KEYS.map((k) => (
+                              <option key={`opt-${key}-${k}`} value={k}>{k}</option>
+                            ))}
+                          </select>
                         </div>
                       );
                     })}
