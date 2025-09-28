@@ -10,6 +10,7 @@ type WeekStatus = "draft" | "published";
 type ShiftWeek = { week_start: string; status: WeekStatus; published_at?: string | null; published_by?: string | null };
 type ShiftDef = { id: number; start_time: string; end_time: string; is_active?: boolean };
 
+/* API helper */
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem("token") || "";
   const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...init });
@@ -24,18 +25,51 @@ function mondayOf(d: Date): Date { const x = new Date(d.getFullYear(), d.getMont
 function addDays(d: Date, n: number): Date { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function pad2(n: number) { return n.toString().padStart(2, "0"); }
 
-/* 24 adet 8 saatlik slot key'i (UI) */
+/* 24 adet 8 saatlik slot key’i (UI) */
 const SLOT_KEYS = Array.from({ length: 24 }, (_, h) => {
   const s = `${pad2(h)}:00`, e = `${pad2((h + 8) % 24)}:00`;
   return `${s}-${e}`;
 });
 
-/* ---- Bileşen ---- */
+/* --- Hücre bileşeni: her hücreye benzersiz key+name/id --- */
+function CellSelect({
+  cellKey,
+  value,
+  disabled,
+  onChange,
+}: {
+  cellKey: string; // "empId|YYYY-MM-DD"
+  value: string;
+  disabled: boolean;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <select
+      key={`sel-${cellKey}-${value}`}                // remount
+      id={`sel-${cellKey}`}                          // unique id
+      name={`sel-${cellKey}`}                        // unique name → autofill engeli
+      autoComplete="off"                             // autofill kapat
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      style={{ width: "100%" }}
+    >
+      <option value="OFF">OFF</option>
+      {SLOT_KEYS.map((k) => (
+        <option key={`opt-${cellKey}-${k}`} value={k}>
+          {k}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/* ---- Ana bileşen ---- */
 export default function ShiftPlanner() {
   // Hafta
   const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const weekStartISO = toISODate(monday);
-  const weekEndISO = toISODate(addDays(monday, 6));
+  const weekEnd = addDays(monday, 6);
   const days = useMemo(() => {
     const labels = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cts", "Paz"];
     return Array.from({ length: 7 }, (_, i) => ({ label: labels[i], iso: toISODate(addDays(monday, i)) }));
@@ -46,7 +80,7 @@ export default function ShiftPlanner() {
   const [week, setWeek] = useState<ShiftWeek | null>(null);
   const [defs, setDefs] = useState<Record<string, number>>({}); // "HH:MM-HH:MM" -> shift_def_id
 
-  // Hücre state: tek sözlük. Key = "empId|YYYY-MM-DD". Value = "OFF" veya "HH:MM-HH:MM"
+  // Hücre sözlüğü: "empId|date" -> "OFF" veya "HH:MM-HH:MM"
   const [cells, setCells] = useState<Record<string, string>>({});
 
   // UI
@@ -69,33 +103,25 @@ export default function ShiftPlanner() {
     setOpenDept(o);
   }, [byDept.length]);
 
-  /* Backend'de yoksa /shifts tablosunu 24 slot ile seed et ve id eşlemesi kur */
+  // Backend'de /shifts seed ve id eşlemesi
   async function ensureDefs(): Promise<Record<string, number>> {
     const map: Record<string, number> = {};
     let existing: ShiftDef[] = [];
     try { existing = await api<ShiftDef[]>("/shifts"); } catch { existing = []; }
     for (const s of existing) map[`${s.start_time.slice(0,5)}-${s.end_time.slice(0,5)}`] = (s as any).id;
-
-    // eksikleri yarat
     for (const key of SLOT_KEYS) {
       if (map[key]) continue;
       const [start_time, end_time] = key.split("-");
-      try {
-        const res = await api<ShiftDef>("/shifts", { method: "POST", body: JSON.stringify({ name: key, start_time, end_time, is_active: true }) });
-        map[key] = (res as any).id;
-      } catch { /* idempotent */ }
+      try { const res = await api("/shifts", { method: "POST", body: JSON.stringify({ name: key, start_time, end_time, is_active: true }) }); map[key] = (res as any).id; } catch {}
     }
-
-    // final çek
     try {
       existing = await api<ShiftDef[]>("/shifts");
       for (const s of existing) map[`${s.start_time.slice(0,5)}-${s.end_time.slice(0,5)}`] = (s as any).id;
     } catch {}
-
     return map;
   }
 
-  /* Yükleme */
+  // Yükleme
   async function load() {
     setLoading(true); setErr(null);
     try {
@@ -109,41 +135,39 @@ export default function ShiftPlanner() {
       setWeek(w);
       setDefs(map);
 
-      // Tüm hücreleri OFF yap
+      // tüm hücreleri OFF
       const dict: Record<string, string> = {};
       for (const emp of e) for (const d of days) dict[`${emp.id}|${d.iso}`] = "OFF";
-
-      // Atamaları işle
+      // mevcut atamalar
       for (const row of a) {
         const key = `${row.employee_id}|${row.date}`;
-        if (row.status === "ON" && row.shift_def_id != null) {
-          // id -> UI anahtarı
-          const uiKey = Object.keys(map).find(k => map[k] === row.shift_def_id) || "OFF";
-          dict[key] = uiKey;
-        }
+        dict[key] = row.status === "ON" && row.shift_def_id != null
+          ? Object.keys(map).find(k => map[k] === row.shift_def_id) || "OFF"
+          : "OFF";
       }
       setCells(dict);
-    } catch (ex: any) {
-      setErr(ex?.message || "Veriler alınamadı");
+    } catch (x: any) {
+      setErr(x?.message || "Veriler alınamadı");
     } finally { setLoading(false); }
   }
   useEffect(() => { load(); /* eslint-disable-line */ }, [weekStartISO]);
 
-  /* Tek hücre güncelle — sadece o anahtar değişir */
+  // Sadece tek hücreyi güncelle
   function setCell(empId: string, iso: string, value: string) {
-    const key = `${empId}|${iso}`;
-    setCells(prev => ({ ...prev, [key]: value }));
+    const k = `${empId}|${iso}`;
+    setCells(prev => (prev[k] === value ? prev : { ...prev, [k]: value }));
   }
 
-  /* Kaydet */
+  // Kaydet
   async function save() {
     setSaving(true); setErr(null);
     try {
       const payload: Assign[] = [];
-      for (const [deptName, list] of byDept) {
+      for (const [dept, list] of byDept) {
         for (const emp of list) {
           for (const d of days) {
-            const v = cells[`${emp.id}|${d.iso}`] || "OFF";
+            const k = `${emp.id}|${d.iso}`;
+            const v = cells[k] ?? "OFF";
             payload.push({
               employee_id: emp.id,
               date: d.iso,
@@ -157,25 +181,21 @@ export default function ShiftPlanner() {
       await api("/shift-assignments/bulk", { method: "POST", body: JSON.stringify(payload) });
       setMsg("Kaydedildi"); setTimeout(() => setMsg(""), 1200);
       await load();
-    } catch (ex: any) {
-      setErr(ex?.message || "Kaydetme hatası"); setTimeout(() => setErr(null), 1800);
+    } catch (x: any) {
+      setErr(x?.message || "Kaydetme hatası"); setTimeout(() => setErr(null), 1800);
     } finally { setSaving(false); }
   }
 
-  /* Publish */
+  // Publish
   async function publish() {
     if (!confirm("Bu haftayı yayınla ve kilitle?")) return;
-    try {
-      const w = await api<ShiftWeek>(`/shift-weeks/${weekStartISO}/publish`, { method: "POST" });
-      setWeek(w); setMsg("Hafta yayınlandı"); setTimeout(() => setMsg(""), 1200);
-    } catch (ex: any) {
-      setErr(ex?.message || "Publish hatası"); setTimeout(() => setErr(null), 1800);
-    }
+    try { const w = await api<ShiftWeek>(`/shift-weeks/${weekStartISO}/publish`, { method: "POST" }); setWeek(w); setMsg("Hafta yayınlandı"); setTimeout(() => setMsg(""), 1200); }
+    catch (x: any) { setErr(x?.message || "Publish hatası"); setTimeout(() => setErr(null), 1800); }
   }
 
   const isDraft = week?.status !== "published";
 
-  /* UI */
+  // UI
   const page: React.CSSProperties = { maxWidth: 1280, margin: "0 auto", padding: 16, display: "grid", gap: 12 };
   const card: React.CSSProperties = { border: "1px solid #eef0f4", borderRadius: 12, background: "#fff", boxShadow: "0 6px 24px rgba(16,24,40,0.04)" };
   const badge: React.CSSProperties = { padding: "2px 8px", borderRadius: 999, fontWeight: 800, fontSize: 12, background: isDraft ? "#fff7ed" : "#ecfdf5", border: `1px solid ${isDraft ? "#fdba74" : "#a7f3d0"}`, color: isDraft ? "#9a3412" : "#065f46" };
@@ -186,7 +206,7 @@ export default function ShiftPlanner() {
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button onClick={() => setMonday(addDays(monday, -7))}>◀ Önceki</button>
           <div>
-            <div style={{ fontSize: 22, fontWeight: 900 }}>{fmtTR.format(monday)}  ➜  {fmtTR.format(new Date(weekEndISO))}</div>
+            <div style={{ fontSize: 22, fontWeight: 900 }}>{fmtTR.format(monday)}  ➜  {fmtTR.format(weekEnd)}</div>
             <div style={{ fontSize: 12, color: "#6b7280" }}>Hafta başlangıcı (Pzt): {weekStartISO}</div>
           </div>
           <button onClick={() => setMonday(addDays(monday, 7))}>Sonraki ▶</button>
@@ -233,21 +253,15 @@ export default function ShiftPlanner() {
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(140px,1fr))" }}>
                     {days.map((d) => {
                       const key = `${emp.id}|${d.iso}`;
-                      const value = cells[key] ?? "OFF"; // sadece bu hücre
+                      const value = cells[key] ?? "OFF";
                       return (
                         <div key={key} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
-                          <select
+                          <CellSelect
+                            cellKey={key}
                             value={value}
-                            onChange={(e) => setCell(emp.id, d.iso, e.target.value)}
                             disabled={!isDraft}
-                            autoComplete="off"
-                            style={{ width: "100%" }}
-                          >
-                            <option value="OFF">OFF</option>
-                            {SLOT_KEYS.map((k) => (
-                              <option key={k} value={k}>{k}</option>
-                            ))}
-                          </select>
+                            onChange={(v) => setCell(emp.id, d.iso, v)}
+                          />
                         </div>
                       );
                     })}
