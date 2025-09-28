@@ -15,8 +15,9 @@ import { RequireRole } from "./lib/auth";
 import ReportsDaily from "./pages/ReportsDaily";
 import AdminTasks from "./pages/AdminTasks";
 import AdminTaskTemplates from "./pages/AdminTaskTemplates";
-import AdminBotSettings from "./pages/AdminBotSettings";     // Bot İşlemleri
-import Notifications from "./pages/Notifications";           // Bildirim Yönetimi (manuel + şablonlar)
+import AdminBotSettings from "./pages/AdminBotSettings";
+import Notifications from "./pages/Notifications";
+import ShiftPlanner from "./pages/ShiftPlanner"; // ⬅️ EKLENDİ
 
 /** Basit Error Boundary — beklenmeyen hatalarda beyaz ekran yerine uyarı gösterir */
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
@@ -28,7 +29,6 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
     return { hasError: true };
   }
   componentDidCatch(error: any, info: any) {
-    // İsterseniz burada Sentry/Log servisine bildirin
     console.error("[ErrorBoundary]", error, info);
   }
   render() {
@@ -72,6 +72,9 @@ export default function App() {
         {/* Admin Görevleri */}
         <Route path="/admin/tasks" element={<Protected><Layout><AdminTasks /></Layout></Protected>} />
         <Route path="/admin/tasks/templates" element={<Protected><Layout><AdminTaskTemplates /></Layout></Protected>} />
+
+        {/* Shift Planlama */}
+        <Route path="/shift-planner" element={<Protected><Layout><ShiftPlanner /></Layout></Protected>} />
 
         {/* Bot İşlemleri & Bildirim Yönetimi */}
         <Route path="/admin/bot" element={<Protected><Layout><AdminBotSettings /></Layout></Protected>} />
