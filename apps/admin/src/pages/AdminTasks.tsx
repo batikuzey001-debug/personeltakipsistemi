@@ -75,11 +75,14 @@ export default function AdminTasks() {
     setLoading(true);
     try {
       const qs = new URLSearchParams();
-      if (date) qs.set("d", date);
+      // Not: scope=open → TÜM TARİHLERDEN açık/gecikmiş görevleri getir
+      // (sadece bugünü değil). Böylece geçmişten sarkan görevler de görünür.
+      qs.set("scope", "open");
+      if (date) qs.set("d", date);       // scope=today için anlamlı; open/all'da opsiyonel
       if (shift) qs.set("shift", shift);
       if (dept) qs.set("dept", dept);
       const data = await api<Task[]>(`/admin-tasks?${qs.toString()}`);
-      setRows(data || []);
+      setRows(Array.isArray(data) ? data : []);
     } catch (e: any) {
       setErr(e?.message || "Görevler alınamadı");
       setRows([]);
@@ -456,7 +459,7 @@ export default function AdminTasks() {
             borderRadius: 12,
             background: err ? "#fee2e2" : "#dcfce7",
             color: err ? "#7f1d1d" : "#065f46",
-            boxShadow: "0 6px 20px rgba(16,24,40,.08)",
+            boxShadow: "0 6px 20px rgba(16,24,40,0.08)",
             fontSize: 13,
           }}
         >
