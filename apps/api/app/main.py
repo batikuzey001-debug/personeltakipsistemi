@@ -18,7 +18,7 @@ import app.models.models                 # employees (department + kart alanlar�
 import app.db.models_admin_tasks         # admin_tasks, admin_task_templates
 import app.db.models_admin_settings      # admin_settings (bot ayarları)
 import app.db.models_admin_notifications # admin_notifications (bildirim şablonları)
-import app.db.models_shifts              # shift_definitions, shift_weeks, shift_assignments  ⬅️ eklendi
+import app.db.models_shifts              # shift_definitions, shift_weeks, shift_assignments
 
 # ROUTERLAR
 from app.api.routes_auth import router as auth_router
@@ -34,9 +34,7 @@ from app.api.routes_reports import router as reports_router
 from app.api.routes_admin_tasks import router as admin_tasks_router
 from app.api.routes_admin_bot import router as admin_bot_router          # /admin-bot/*
 from app.api.routes_admin_notifications import router as admin_notify_router
-from app.api.routes_shifts import router as shifts_router
-from app.api.routes_shift_assignments import router as shift_assignments_router
-from app.api.routes_shift_weeks import router as shift_weeks_router
+from app.api.routes_shifts import router as shifts_router                 # ⬅️ debug/seed uçları burada
 
 # Scheduler (geciken görev tarayıcı + attendance + bonus)
 from app.scheduler.admin_tasks_jobs import start_scheduler
@@ -46,7 +44,7 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.APP_NAME)
 
-# CORS – panel → API istekleri için serbest bırakıyoruz (Bearer token header kullanıyoruz)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -55,13 +53,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---- Startup migrasyonları (kolon yoksa ekle; tip yanlışsa düzelt) ----
+# ---- Startup migrasyonları ----
 MIGRATIONS_SQL = [
     # UID kolonlarını BIGINT'e yükselt
     "ALTER TABLE IF EXISTS raw_messages ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
     "ALTER TABLE IF EXISTS events       ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
 
-    # employees: kart alanları (varsa atlar)
+    # employees ek alanlar
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS department VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(255);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
@@ -69,7 +67,7 @@ MIGRATIONS_SQL = [
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
 
-    # **kritik düzeltme**: telegram_user_id sütunu daha önce INTEGER ise BIGINT'e çevir
+    # telegram_user_id INTEGER ise BIGINT'e çevir
     "DO $$ BEGIN "
     "  IF EXISTS (SELECT 1 FROM information_schema.columns "
     "             WHERE table_name='employees' AND column_name='telegram_user_id' AND data_type='integer') THEN "
@@ -77,12 +75,12 @@ MIGRATIONS_SQL = [
     "  END IF; "
     "END $$;",
 
-    # admin_tasks için faydalı indeksler
+    # admin_tasks indeksler
     "CREATE INDEX IF NOT EXISTS idx_admin_tasks_date ON admin_tasks(date);",
     "CREATE INDEX IF NOT EXISTS idx_admin_tasks_status ON admin_tasks(status);",
     "CREATE INDEX IF NOT EXISTS idx_admin_tasks_assignee ON admin_tasks(assignee_employee_id);",
 
-    # admin_settings tablosu
+    # admin_settings
     "CREATE TABLE IF NOT EXISTS admin_settings ("
     " key TEXT PRIMARY KEY,"
     " value TEXT NOT NULL,"
@@ -93,7 +91,7 @@ MIGRATIONS_SQL = [
     "INSERT INTO admin_settings(key,value) VALUES ('finance_tg_enabled','0')      ON CONFLICT (key) DO NOTHING;",
     "INSERT INTO admin_settings(key,value) VALUES ('attendance_tg_enabled','0')   ON CONFLICT (key) DO NOTHING;",
 
-    # admin_notifications tablosu (şablonlar)
+    # admin_notifications
     "CREATE TABLE IF NOT EXISTS admin_notifications ("
     " id SERIAL PRIMARY KEY,"
     " channel VARCHAR(32) NOT NULL,"
@@ -104,7 +102,6 @@ MIGRATIONS_SQL = [
     " updated_at TIMESTAMP NOT NULL DEFAULT NOW()"
     ");",
 
-    # admin_notifications_log (tekrarsız gönderim için)
     "CREATE TABLE IF NOT EXISTS admin_notifications_log ("
     " id SERIAL PRIMARY KEY,"
     " channel VARCHAR(32) NOT NULL,"
@@ -122,6 +119,12 @@ MIGRATIONS_SQL = [
     " end_time TIME NOT NULL,"
     " is_active BOOLEAN NOT NULL DEFAULT TRUE"
     ");",
+    # start_time + end_time benzersiz (tek slot = tek id)
+    "DO $$ BEGIN "
+    "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='uq_shift_def_start_end') THEN "
+    "    ALTER TABLE shift_definitions ADD CONSTRAINT uq_shift_def_start_end UNIQUE (start_time, end_time); "
+    "  END IF; "
+    "END $$;",
 
     # shift_weeks
     "CREATE TABLE IF NOT EXISTS shift_weeks ("
@@ -145,7 +148,6 @@ MIGRATIONS_SQL = [
 
 @app.on_event("startup")
 def run_startup_migrations():
-    # idempotent migrationlar
     with engine.begin() as conn:
         for stmt in MIGRATIONS_SQL:
             try:
@@ -153,10 +155,9 @@ def run_startup_migrations():
             except Exception as e:
                 print(f"[startup-migration] skip/err: {e}")
 
-    # Scheduler: çoklu worker varsa RUN_SCHEDULER=0 ile kapatılabilir
     try:
         if os.getenv("RUN_SCHEDULER", "1") == "1":
-            start_scheduler()  # Europe/Istanbul TZ
+            start_scheduler()
             print("[scheduler] started")
         else:
             print("[scheduler] disabled by RUN_SCHEDULER")
@@ -167,15 +168,14 @@ def run_startup_migrations():
 def healthz():
     return {"ok": True}
 
-# Debug amaçlı: kayıtlı tüm yolları gör
 @app.get("/_routes")
 def list_routes():
     return sorted({f"{getattr(r, 'methods', {'GET'})} {getattr(r, 'path', getattr(r, 'path_regex', ''))}" for r in app.router.routes})
 
-# Router kayıtları (tekrarsız)
+# Router kayıtları
 app.include_router(auth_router)
 app.include_router(org_router)
-app.include_router(seed_router)          # /seed/*
+app.include_router(seed_router)
 app.include_router(users_router)
 app.include_router(telegram_router)
 app.include_router(debug_router)
@@ -184,8 +184,6 @@ app.include_router(identities_router)
 app.include_router(employee_view_router)
 app.include_router(reports_router)
 app.include_router(admin_tasks_router)
-app.include_router(admin_bot_router)     # /admin-bot/*
-app.include_router(admin_notify_router)  # /admin-notify/*
-app.include_router(shifts_router)
-app.include_router(shift_assignments_router)
-app.include_router(shift_weeks_router)
+app.include_router(admin_bot_router)
+app.include_router(admin_notify_router)
+app.include_router(shifts_router)   # ⬅️ /shifts + debug uçları
