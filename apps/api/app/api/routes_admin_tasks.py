@@ -1,28 +1,25 @@
 # apps/api/app/api/routes_admin_tasks.py
 from __future__ import annotations
-from datetime import date
-from typing import Optional, List, Iterable
+from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.deps import get_db, RolesAllowed
-from app.db.models_admin_tasks import AdminTaskTemplate  # ← Model: id,title,shift,department,default_assignee,is_active
+from app.db.models_admin_tasks import AdminTaskTemplate  # id, title, shift, department, default_assignee, is_active
 
 router = APIRouter(prefix="/admin-tasks", tags=["admin_tasks:templates"])
 
-# ---------- SCHEMAS ----------
+# ---------- SCHEMAS (Pydantic v2 uyumlu) ----------
 class TemplateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)  # <- v2: orm_mode yerine
     id: int
     title: str
     shift: Optional[str] = None
     department: Optional[str] = None
     default_assignee: Optional[str] = None
     is_active: bool
-
-    class Config:
-        orm_mode = True
 
 class TemplateCreate(BaseModel):
     title: str = Field(..., min_length=2, max_length=200)
@@ -44,7 +41,8 @@ class TemplateBulkIn(BaseModel):
 
 # ---------- HELPERS ----------
 def _to_out(t: AdminTaskTemplate) -> TemplateOut:
-    return TemplateOut.from_orm(t)
+    # v2: from_orm yerine model_validate(..., from_attributes=True)
+    return TemplateOut.model_validate(t, from_attributes=True)
 
 
 # ---------- ROUTES ----------
@@ -118,7 +116,6 @@ def create_templates_bulk(payload: TemplateBulkIn, db: Session = Depends(get_db)
         db.add(t)
         created.append(t)
     db.commit()
-    # refresh
     for t in created:
         db.refresh(t)
     return [_to_out(t) for t in created]
