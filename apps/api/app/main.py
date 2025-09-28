@@ -34,6 +34,9 @@ from app.api.routes_reports import router as reports_router
 from app.api.routes_admin_tasks import router as admin_tasks_router
 from app.api.routes_admin_bot import router as admin_bot_router          # /admin-bot/*
 from app.api.routes_admin_notifications import router as admin_notify_router
+from app.api.routes_shifts import router as shifts_router
+from app.api.routes_shift_assignments import router as shift_assignments_router
+from app.api.routes_shift_weeks import router as shift_weeks_router
 
 # Scheduler (geciken görev tarayıcı + attendance + bonus)
 from app.scheduler.admin_tasks_jobs import start_scheduler
@@ -183,3 +186,6 @@ app.include_router(reports_router)
 app.include_router(admin_tasks_router)
 app.include_router(admin_bot_router)     # /admin-bot/*
 app.include_router(admin_notify_router)  # /admin-notify/*
+app.include_router(shifts_router)
+app.include_router(shift_assignments_router)
+app.include_router(shift_weeks_router)
