@@ -20,7 +20,8 @@ from app.services.bonus_metrics_service import (
     compute_bonus_periodic_context,
 )
 from app.services.template_engine import render
-from app.services.telegram_notify import send_text
+# ⬇️ Bonus raporlarını hem genel gruba hem BONUS_TG_CHAT_ID'ye yollamak için
+from app.services.telegram_notify import send_bonus_to_both
 
 # Settings
 from app.services.admin_settings_service import (
@@ -37,16 +38,16 @@ IST = timezone("Europe/Istanbul")
 
 def _with_db(fn):
     def inner(*args, **kwargs):
-      db = SessionLocal()
-      try:
-          return fn(db, *args, **kwargs)
-      finally:
-          db.close()
+        db = SessionLocal()
+        try:
+            return fn(db, *args, **kwargs)
+        finally:
+            db.close()
     return inner
 
 
 def _enabled(db, key: str) -> bool:
-    # Her tetikte DB’den okur ⇒ kalıcı toggle davranışı
+    # Her tetikte DB’den okur ⇒ toggle kalıcı ve anlık etkili
     return bool(get_bool(db, key, False))
 
 
@@ -111,15 +112,20 @@ def job_bonus_day_end_0015(db):
     target = date(y.year, y.month, y.day)
     ctx = compute_bonus_daily_context(db, target, sla_first_sec=60)
 
-    slow_text = "\n".join([f"- {i.get('full_name','-')} — {int(i.get('gt60_cnt') or 0)} işlem" for i in ctx["slow_list"]]) or "- —"
-    per_emp_text = "\n".join([
-        f"- {i.get('full_name','-')} — {int(i.get('close_cnt') or 0)} işlem • Ø "
-        f"{(str(int(round(i['avg_first_emp'])))+' sn') if i.get('avg_first_emp') is not None else '—'}"
-        for i in ctx["per_emp"]
-    ]) or "- —"
+    slow_text = "\n".join(
+        [f"- {i.get('full_name','-')} — {int(i.get('gt60_cnt') or 0)} işlem" for i in ctx["slow_list"]]
+    ) or "- —"
+    per_emp_text = "\n".join(
+        [
+            f"- {i.get('full_name','-')} — {int(i.get('close_cnt') or 0)} işlem • Ø "
+            f"{(str(int(round(i['avg_first_emp'])))+' sn') if i.get('avg_first_emp') is not None else '—'}"
+            for i in ctx["per_emp"]
+        ]
+    ) or "- —"
 
     msg = render(
-        db, "bonus_daily_v2",
+        db,
+        "bonus_daily_v2",
         {
             "date": ctx["date_label"],
             "total_close": ctx["total_close"],
@@ -138,7 +144,8 @@ def job_bonus_day_end_0015(db):
         ),
         channel="bonus",
     )
-    send_text(msg)
+    # ⬇️ Hem genel hem BONUS gruba gönder
+    send_bonus_to_both(msg)
 
 
 # --------- BONUS: 2 saatlik (çift saatler) ---------
@@ -159,10 +166,12 @@ def job_bonus_periodic_2h(db):
     slow30_block = f"\n\n⚠️ *30 sn üzeri İlk KT*\n{slow30_text}" if slow30_text else ""
 
     msg = render(
-        db, "bonus_periodic_v2",
+        db,
+        "bonus_periodic_v2",
         {
             "date": ctx["date_label"],
-            "win_start": ctx["win_start"], "win_end": ctx["win_end"],
+            "win_start": ctx["win_start"],
+            "win_end": ctx["win_end"],
             "total_close": ctx["total_close"],
             "per_emp_text": per_emp_text,
             "slow30_block": slow30_block,
@@ -174,7 +183,8 @@ def job_bonus_periodic_2h(db):
         ),
         channel="bonus",
     )
-    send_text(msg)
+    # ⬇️ Hem genel hem BONUS gruba gönder
+    send_bonus_to_both(msg)
 
 
 def start_scheduler():
@@ -193,9 +203,12 @@ def start_scheduler():
     # BONUS
     scheduler.add_job(job_bonus_day_end_0015, "cron", hour=0, minute=15, id="bonus_day_end_0015", replace_existing=True)
     scheduler.add_job(
-        job_bonus_periodic_2h, "cron",
-        hour="0,2,4,6,8,10,12,14,16,18,20,22", minute=0,
-        id="bonus_periodic_2h", replace_existing=True
+        job_bonus_periodic_2h,
+        "cron",
+        hour="0,2,4,6,8,10,12,14,16,18,20,22",
+        minute=0,
+        id="bonus_periodic_2h",
+        replace_existing=True,
     )
 
     if not scheduler.running:
