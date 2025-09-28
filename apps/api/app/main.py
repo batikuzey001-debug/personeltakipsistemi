@@ -18,6 +18,7 @@ import app.models.models                 # employees (department + kart alanlar�
 import app.db.models_admin_tasks         # admin_tasks, admin_task_templates
 import app.db.models_admin_settings      # admin_settings (bot ayarları)
 import app.db.models_admin_notifications # admin_notifications (bildirim şablonları)
+import app.db.models_shifts              # shift_definitions, shift_weeks, shift_assignments  ⬅️ eklendi
 
 # ROUTERLAR
 from app.api.routes_auth import router as auth_router
@@ -108,6 +109,34 @@ MIGRATIONS_SQL = [
     " period_key VARCHAR(64) NOT NULL,"
     " sent_at TIMESTAMP NOT NULL DEFAULT NOW(),"
     " UNIQUE(channel, type, period_key)"
+    ");",
+
+    # shift_definitions
+    "CREATE TABLE IF NOT EXISTS shift_definitions ("
+    " id SERIAL PRIMARY KEY,"
+    " name VARCHAR(64) NOT NULL,"
+    " start_time TIME NOT NULL,"
+    " end_time TIME NOT NULL,"
+    " is_active BOOLEAN NOT NULL DEFAULT TRUE"
+    ");",
+
+    # shift_weeks
+    "CREATE TABLE IF NOT EXISTS shift_weeks ("
+    " week_start DATE PRIMARY KEY,"
+    " status VARCHAR(16) NOT NULL DEFAULT 'draft',"
+    " published_at TIMESTAMP NULL,"
+    " published_by VARCHAR(64) NULL"
+    ");",
+
+    # shift_assignments
+    "CREATE TABLE IF NOT EXISTS shift_assignments ("
+    " id SERIAL PRIMARY KEY,"
+    " week_start DATE NOT NULL,"
+    " date DATE NOT NULL,"
+    " employee_id VARCHAR NOT NULL,"
+    " shift_def_id INT REFERENCES shift_definitions(id),"
+    " status VARCHAR(8) NOT NULL DEFAULT 'ON',"
+    " UNIQUE(employee_id, date)"
     ");",
 ]
 
