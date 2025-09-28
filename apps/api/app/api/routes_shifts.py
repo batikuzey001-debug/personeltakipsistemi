@@ -6,8 +6,7 @@ from datetime import time
 
 from app.deps import get_db, RolesAllowed
 from app.db.models_shifts import ShiftDefinition
-
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 router = APIRouter(prefix="/shifts", tags=["shifts"])
 
@@ -18,14 +17,12 @@ class ShiftDefIn(BaseModel):
     is_active: Optional[bool] = True
 
 class ShiftDefOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
-    start_time: str
-    end_time: str
+    start_time: time   # ← time olarak döndür
+    end_time: time     # ← time olarak döndür
     is_active: bool
-
-    class Config:
-        orm_mode = True
 
 @router.get("", response_model=List[ShiftDefOut], dependencies=[Depends(RolesAllowed("super_admin","admin"))])
 def list_shifts(db: Session = Depends(get_db)):
@@ -34,10 +31,10 @@ def list_shifts(db: Session = Depends(get_db)):
 @router.post("", response_model=ShiftDefOut, dependencies=[Depends(RolesAllowed("super_admin","admin"))])
 def create_shift(body: ShiftDefIn, db: Session = Depends(get_db)):
     s = ShiftDefinition(
-        name=body.name,
+        name=body.name.strip(),
         start_time=time.fromisoformat(body.start_time),
         end_time=time.fromisoformat(body.end_time),
-        is_active=body.is_active,
+        is_active=bool(body.is_active),
     )
     db.add(s)
     db.commit()
@@ -49,10 +46,10 @@ def update_shift(shift_id: int, body: ShiftDefIn, db: Session = Depends(get_db))
     s = db.query(ShiftDefinition).get(shift_id)
     if not s:
         raise HTTPException(status_code=404, detail="shift not found")
-    s.name = body.name
+    s.name = body.name.strip()
     s.start_time = time.fromisoformat(body.start_time)
     s.end_time = time.fromisoformat(body.end_time)
-    s.is_active = body.is_active
+    s.is_active = bool(body.is_active)
     db.commit()
     db.refresh(s)
     return s
