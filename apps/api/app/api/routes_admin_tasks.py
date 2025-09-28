@@ -6,6 +6,7 @@ from typing import Optional, List, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
+from sqlalchemy import func, and_, exists, select
 from pytz import timezone
 
 from app.deps import get_db, RolesAllowed
@@ -20,10 +21,22 @@ IST = timezone("Europe/Istanbul")
 
 # ---------------- Common helpers ----------------
 def _today_ist() -> date:
-    # Modelde 'date' kolonu zorunluysa içsel olarak bugünün tarihini yazarız.
     return datetime.now(IST).date()
 
-# ===================== TASKS =====================
+def _now_ist() -> datetime:
+    return datetime.now(IST)
+
+def _norm_title_expr(col):
+    # Basit normalize: lower(trim(col))
+    return func.lower(func.trim(col))
+
+def _norm_str(s: Optional[str]) -> Optional[str]:
+    if s is None:
+        return None
+    s = " ".join(str(s).split())
+    return s.strip().lower()
+
+# ===================== TASKS (Liste + Tamamlama) =====================
 class TaskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -46,6 +59,7 @@ def _to_task_out(t: AdminTask) -> TaskOut:
     dependencies=[Depends(RolesAllowed("super_admin", "admin", "manager"))],
 )
 def list_tasks(
+    date_: Optional[date] = Query(None, alias="date", description="Varsayılan: bugün"),
     shift: Optional[str] = None,
     dept: Optional[str] = None,
     assignee: Optional[str] = None,
@@ -53,11 +67,26 @@ def list_tasks(
     db: Session = Depends(get_db),
 ):
     """
-    Mesai bazlı görev akışı:
-      - scope=open  → tarihten bağımsız AÇIK/GEÇİKMİŞ bütün görevler (varsayılan)
-      - scope=all   → tüm görevler
+    Sadece ŞABLONLARDAN türeyen görevleri döndür.
+    Varsayılan gün filtresi: bugün.
     """
-    qy = db.query(AdminTask)
+    target_date = date_ or _today_ist()
+
+    # Şablon eşleşmesi için EXISTS alt sorgusu (template_id kolonu gerektirmez).
+    tpl_exists = exists().where(
+        and_(
+            _norm_title_expr(AdminTaskTemplate.title) == _norm_title_expr(AdminTask.title),
+            (AdminTaskTemplate.shift == AdminTask.shift) if shift is None else (AdminTaskTemplate.shift == shift),
+            (AdminTaskTemplate.department == AdminTask.department) if dept is None else (AdminTaskTemplate.department == dept),
+            AdminTaskTemplate.is_active.is_(True),
+        )
+    )
+
+    qy = db.query(AdminTask).filter(
+        AdminTask.date == target_date,
+        tpl_exists,
+    )
+
     if scope == "open":
         qy = qy.filter(AdminTask.is_done == False)
 
@@ -71,87 +100,6 @@ def list_tasks(
     qy = qy.order_by(AdminTask.shift.asc().nulls_last(), AdminTask.title.asc())
     return [_to_task_out(t) for t in qy.all()]
 
-class TaskCreateIn(BaseModel):
-    title: str = Field(..., min_length=2, max_length=200)
-    shift: Optional[str] = None
-    department: Optional[str] = None
-    assignee_employee_id: Optional[str] = None
-    due_ts: Optional[datetime] = None  # İsterseniz vardiya bitişi verin
-
-# ===== Upsert helper: Görev oluşturulunca şablon yoksa ekle =====
-from sqlalchemy import func  # aşağıda da kullanılıyor
-
-def _ensure_template_upsert(
-    db: Session,
-    *,
-    title: str,
-    shift: Optional[str],
-    department: Optional[str],
-    default_assignee: Optional[str],
-) -> None:
-    """
-    Neden: 'Görev var ama Şablon yok' durumunu kalıcı olarak engellemek.
-    """
-    # _norm_str fonksiyonu dosyada aşağıda tanımlı; çağrı anında çözülür.
-    title_norm = _norm_str(title)
-    shift_val = shift or None
-    dept_val = department or None
-
-    exists_q = db.query(AdminTaskTemplate).filter(
-        func.lower(func.trim(AdminTaskTemplate.title)) == title_norm,
-        (AdminTaskTemplate.shift == shift_val) if shift_val is not None else AdminTaskTemplate.shift.is_(None),
-        (AdminTaskTemplate.department == dept_val) if dept_val is not None else AdminTaskTemplate.department.is_(None),
-    )
-
-    if db.query(exists_q.exists()).scalar():
-        return  # zaten var
-
-    tpl = AdminTaskTemplate(
-        title=" ".join((title or "").split()).strip(),  # görsel temizlik
-        shift=shift_val,
-        department=dept_val,
-        default_assignee=default_assignee or None,
-        is_active=True,
-    )
-    db.add(tpl)  # commit'i çağıran üst akış yapacak
-
-@router.post(
-    "",
-    response_model=TaskOut,
-    dependencies=[Depends(RolesAllowed("super_admin", "admin", "manager"))],
-)
-def create_task(body: TaskCreateIn, db: Session = Depends(get_db)):
-    """
-    Yönetici görev atar → görev anında görünür (tarih kavramı UI'da yok; model gerekirse bugünün tarihini alır).
-    Ayrıca: Aynı (title, shift, department) için şablon yoksa otomatik oluşturulur.
-    """
-    t = AdminTask(
-        date=_today_ist(),  # modelde zorunluysa içsel olarak set ediyoruz
-        title=body.title.strip(),
-        shift=body.shift,
-        department=body.department,
-        assignee_employee_id=body.assignee_employee_id,
-        due_ts=body.due_ts,
-        status=TaskStatus.open,
-        is_done=False,
-        done_at=None,
-        done_by=None,
-    )
-    db.add(t)
-
-    # Şablon upsert
-    _ensure_template_upsert(
-        db,
-        title=body.title.strip(),
-        shift=body.shift,
-        department=body.department,
-        default_assignee=body.assignee_employee_id,
-    )
-
-    db.commit()
-    db.refresh(t)
-    return _to_task_out(t)
-
 class TickIn(BaseModel):
     who: Optional[str] = None
 
@@ -161,25 +109,41 @@ class TickIn(BaseModel):
     dependencies=[Depends(RolesAllowed("super_admin", "admin", "manager"))],
 )
 def tick_task(task_id: int, body: TickIn, db: Session = Depends(get_db)):
-    # SQLAlchemy 1.x & 2.x uyumlu get
     t: AdminTask | None = db.get(AdminTask, task_id) if hasattr(db, "get") else db.query(AdminTask).get(task_id)
     if not t:
         raise HTTPException(status_code=404, detail="task not found")
     if t.is_done:
         return _to_task_out(t)
 
-    now = datetime.utcnow()
+    now = _now_ist()  # Neden: damga yerel saatle tutulacak.
     t.is_done = True
     t.done_at = now
     t.done_by = (body.who or "admin").strip()
-    t.status = TaskStatus.late if (t.due_ts and now > t.due_ts) else TaskStatus.done
+    # Gecikme mantığı iskelet: due_ts sonra tanımlanacak. Şimdilik done.
+    t.status = TaskStatus.done
 
     db.commit()
     db.refresh(t)
     return _to_task_out(t)
 
-# ======= TEMPLATES (Yönetim) =======
+# ========= MANUEL OLUŞTURMAYI KAPAT =========
+class TaskCreateIn(BaseModel):
+    title: str = Field(..., min_length=2, max_length=200)
+    shift: Optional[str] = None
+    department: Optional[str] = None
+    assignee_employee_id: Optional[str] = None
+    due_ts: Optional[datetime] = None
 
+@router.post(
+    "",
+    response_model=TaskOut,
+    dependencies=[Depends(RolesAllowed("super_admin", "admin", "manager"))],
+)
+def create_task_disabled(_: TaskCreateIn, __: Session = Depends(get_db)):
+    # Neden: Tüm görevler şablonlardan üretilecek.
+    raise HTTPException(status_code=400, detail="Manual task creation disabled. Use /admin-tasks/materialize or /admin-tasks/templates/{id}/assign")
+
+# ======= TEMPLATES (Yönetim) =======
 class TemplateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -215,7 +179,7 @@ def _to_tpl_out(t: AdminTaskTemplate) -> TemplateOut:
     dependencies=[Depends(RolesAllowed("super_admin", "admin", "manager"))],
 )
 def list_templates(shift: Optional[str] = None, dept: Optional[str] = None, q: Optional[str] = None, db: Session = Depends(get_db)):
-    qy = db.query(AdminTaskTemplate)
+    qy = db.query(AdminTaskTemplate).filter(AdminTaskTemplate.is_active.is_(True))
     if shift: qy = qy.filter(AdminTaskTemplate.shift == shift)
     if dept:  qy = qy.filter(AdminTaskTemplate.department == dept)
     if q:
@@ -238,10 +202,6 @@ def create_template(
     materialize: bool = Query(False, description="Oluştururken anında görev ata (varsayılan: False)"),
     db: Session = Depends(get_db),
 ):
-    """
-    Şablon oluştur (varsayılan: görev atamaz).
-    İstenirse materialize=True ile aynı anda görev atar (tek görev).
-    """
     tpl = AdminTaskTemplate(
         title=body.title.strip(),
         shift=(body.shift or None),
@@ -253,7 +213,6 @@ def create_template(
     db.flush()
 
     if materialize and tpl.is_active:
-        # Şablondan tek görev ata (date içsel bugüne yazılır)
         t = AdminTask(
             date=_today_ist(),
             title=tpl.title,
@@ -343,7 +302,6 @@ def update_template(tpl_id: int, body: TemplateUpdate, db: Session = Depends(get
     dependencies=[Depends(RolesAllowed("super_admin", "admin", "manager"))],
 )
 def delete_template(tpl_id: int, db: Session = Depends(get_db)):
-    # SQLAlchemy 1.x ve 2.x için güvenli get
     t: AdminTaskTemplate | None = db.get(AdminTaskTemplate, tpl_id) if hasattr(db, "get") else db.query(AdminTaskTemplate).get(tpl_id)
     if not t:
         raise HTTPException(status_code=404, detail="template not found")
@@ -351,11 +309,11 @@ def delete_template(tpl_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True, "id": tpl_id}
 
-# ===== ŞABLONDAN TEK TIKLA GÖREV ATAMA (UI "Görev ata" butonu için) =====
+# ===== ŞABLONDAN TEK TIKLA GÖREV ATAMA =====
 class AssignFromTemplateIn(BaseModel):
     assignee_employee_id: Optional[str] = None
-    shift: Optional[str] = None          # şablon değerini override edebilir
-    department: Optional[str] = None     # şablon değerini override edebilir
+    shift: Optional[str] = None
+    department: Optional[str] = None
     due_ts: Optional[datetime] = None
 
 @router.post(
@@ -367,9 +325,11 @@ def assign_from_template(tpl_id: int, body: AssignFromTemplateIn, db: Session = 
     tpl: AdminTaskTemplate | None = db.get(AdminTaskTemplate, tpl_id) if hasattr(db, "get") else db.query(AdminTaskTemplate).get(tpl_id)
     if not tpl:
         raise HTTPException(status_code=404, detail="template not found")
+    if not tpl.is_active:
+        raise HTTPException(status_code=400, detail="template is not active")
 
     t = AdminTask(
-        date=_today_ist(),  # model gereği; UI tarih kullanmıyor
+        date=_today_ist(),
         title=tpl.title,
         shift=(body.shift if body.shift is not None else tpl.shift),
         department=(body.department if body.department is not None else tpl.department),
@@ -385,21 +345,73 @@ def assign_from_template(tpl_id: int, body: AssignFromTemplateIn, db: Session = 
     db.refresh(t)
     return _to_task_out(t)
 
-# ---- EK: Görevlerden şablon üret (normalize'lı) ----
-from sqlalchemy import func  # tekrar import güvenli ama isterseniz kaldırabilirsiniz
+# ===== Günlük İdempotent Üretim (materialize) =====
+class MaterializeOut(BaseModel):
+    created: int
+    skipped: int
 
-def _norm_title_expr(col):
-    # lower(trim(regexp_replace(title, '\s+', ' ')))
-    # Not: Postgres ise regexp_replace kullanılabilir; evrensel yaklaşım için replace-chain:
-    # Basit normalize: lower(trim(title))
-    return func.lower(func.trim(col))
+@router.post(
+    "/materialize",
+    response_model=MaterializeOut,
+    dependencies=[Depends(RolesAllowed("super_admin", "admin", "manager"))],
+)
+def materialize_tasks_for_day(
+    date_: Optional[date] = Query(None, alias="date", description="Varsayılan: bugün"),
+    shift: Optional[str] = Query(None, description="Sadece bu vardiya"),
+    dept: Optional[str] = Query(None, alias="department", description="Sadece bu departman"),
+    db: Session = Depends(get_db),
+):
+    """
+    Aktif şablonlardan hedef güne görev üretir. Aynı gün aynı (title,shift,department) varsa atlar.
+    """
+    target_date = date_ or _today_ist()
 
-def _norm_str(s: Optional[str]) -> Optional[str]:
-    if s is None:
-        return None
-    s = " ".join(str(s).split())  # çoklu boşlukları tekle
-    return s.strip().lower()
+    tpl_q = db.query(AdminTaskTemplate).filter(AdminTaskTemplate.is_active.is_(True))
+    if shift:
+        tpl_q = tpl_q.filter(AdminTaskTemplate.shift == shift)
+    if dept:
+        tpl_q = tpl_q.filter(AdminTaskTemplate.department == dept)
+    templates = tpl_q.all()
 
+    created = 0
+    skipped = 0
+
+    for tpl in templates:
+        title_norm = _norm_str(tpl.title)
+        shift_val = tpl.shift or None
+        dept_val = tpl.department or None
+
+        # Var mı? Aynı gün + aynı normalize başlık + aynı shift/department
+        exists_q = db.query(AdminTask).filter(
+            AdminTask.date == target_date,
+            (_norm_title_expr(AdminTask.title) == title_norm),
+            (AdminTask.shift == shift_val) if shift_val is not None else AdminTask.shift.is_(None),
+            (AdminTask.department == dept_val) if dept_val is not None else AdminTask.department.is_(None),
+        )
+
+        if db.query(exists_q.exists()).scalar():
+            skipped += 1
+            continue
+
+        t = AdminTask(
+            date=target_date,
+            title=tpl.title,
+            shift=tpl.shift,
+            department=tpl.department,
+            assignee_employee_id=tpl.default_assignee,
+            due_ts=None,
+            status=TaskStatus.open,
+            is_done=False,
+            done_at=None,
+            done_by=None,
+        )
+        db.add(t)
+        created += 1
+
+    db.commit()
+    return MaterializeOut(created=created, skipped=skipped)
+
+# ---- Opsiyonel: Görevlerden şablon üret (mevcut) ----
 class BackfillResult(BaseModel):
     created: int
     skipped: int
@@ -417,10 +429,6 @@ def backfill_templates_from_tasks(
     dry_run: bool = Query(False, description="True → sadece önizleme"),
     db: Session = Depends(get_db),
 ):
-    """
-    AdminTask kayıtlarından normalize (title, shift, department) kombinasyonlarını çıkarır,
-    AdminTaskTemplate tablosunda yoksa yeni şablon oluşturur (is_active=True).
-    """
     q = db.query(
         _norm_title_expr(AdminTask.title).label("title_norm"),
         AdminTask.title.label("title_raw"),
@@ -434,7 +442,6 @@ def backfill_templates_from_tasks(
     if dept:
         q = q.filter(AdminTask.department == dept)
 
-    # Distinct kombinasyonlar
     combos = q.group_by(
         _norm_title_expr(AdminTask.title),
         AdminTask.title,
@@ -455,7 +462,6 @@ def backfill_templates_from_tasks(
             skipped += 1
             continue
 
-        # Şablon var mı? (normalize başlık ve aynı vardiya/department)
         exists_q = db.query(AdminTaskTemplate).filter(
             func.lower(func.trim(AdminTaskTemplate.title)) == title_norm,
             (AdminTaskTemplate.shift == shift_val) if shift_val is not None else AdminTaskTemplate.shift.is_(None),
@@ -465,12 +471,11 @@ def backfill_templates_from_tasks(
             skipped += 1
             continue
 
-        # Oluşturulacak şablonu hazırla (önizleme için de kullanacağız)
         t = AdminTaskTemplate(
-            title=" ".join((row.title_raw or "").split()).strip(),  # ekranda düzgün görünsün
+            title=" ".join((row.title_raw or "").split()).strip(),
             shift=shift_val,
             department=dept_val,
-            default_assignee=None,  # mevcut görevdeki kişi sabitlenmesin diye boş bırakıyoruz
+            default_assignee=None,
             is_active=True,
         )
         if dry_run:
