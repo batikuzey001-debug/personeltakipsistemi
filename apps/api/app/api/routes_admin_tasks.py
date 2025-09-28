@@ -336,3 +336,106 @@ def assign_from_template(tpl_id: int, body: AssignFromTemplateIn, db: Session = 
     db.commit()
     db.refresh(t)
     return _to_task_out(t)
+
+# ---- EK: Görevlerden şablon üret (normalize'lı) ----
+from sqlalchemy import func
+
+def _norm_title_expr(col):
+    # lower(trim(regexp_replace(title, '\s+', ' ')))
+    # Not: Postgres ise regexp_replace kullanılabilir; evrensel yaklaşım için replace-chain:
+    # Basit normalize: lower(trim(title))
+    return func.lower(func.trim(col))
+
+def _norm_str(s: Optional[str]) -> Optional[str]:
+    if s is None:
+        return None
+    s = " ".join(str(s).split())  # çoklu boşlukları tekle
+    return s.strip().lower()
+
+class BackfillResult(BaseModel):
+    created: int
+    skipped: int
+    preview: Optional[List[TemplateOut]] = None
+
+@router.post(
+    "/templates/backfill-from-tasks",
+    response_model=BackfillResult,
+    dependencies=[Depends(RolesAllowed("super_admin","admin"))],
+)
+def backfill_templates_from_tasks(
+    include_done: bool = Query(False, description="True → tamamlanmış görevlerden de üret"),
+    shift: Optional[str] = Query(None, description="Sadece bu vardiya (örn: Sabah)"),
+    dept: Optional[str] = Query(None, description="Sadece bu departman (örn: Admin)"),
+    dry_run: bool = Query(False, description="True → sadece önizleme"),
+    db: Session = Depends(get_db),
+):
+    """
+    AdminTask kayıtlarından normalize (title, shift, department) kombinasyonlarını çıkarır,
+    AdminTaskTemplate tablosunda yoksa yeni şablon oluşturur (is_active=True).
+    """
+    q = db.query(
+        _norm_title_expr(AdminTask.title).label("title_norm"),
+        AdminTask.title.label("title_raw"),
+        AdminTask.shift.label("shift"),
+        AdminTask.department.label("department"),
+    )
+    if not include_done:
+        q = q.filter(AdminTask.is_done == False)
+    if shift:
+        q = q.filter(AdminTask.shift == shift)
+    if dept:
+        q = q.filter(AdminTask.department == dept)
+
+    # Distinct kombinasyonlar
+    combos = q.group_by(
+        _norm_title_expr(AdminTask.title),
+        AdminTask.title,
+        AdminTask.shift,
+        AdminTask.department
+    ).all()
+
+    created = 0
+    skipped = 0
+    preview_items: List[AdminTaskTemplate] = []
+
+    for row in combos:
+        title_norm = _norm_str(row.title_raw)
+        shift_val = row.shift or None
+        dept_val = row.department or None
+
+        if not title_norm:
+            skipped += 1
+            continue
+
+        # Şablon var mı? (normalize başlık ve aynı vardiya/department)
+        exists_q = db.query(AdminTaskTemplate).filter(
+            func.lower(func.trim(AdminTaskTemplate.title)) == title_norm,
+            (AdminTaskTemplate.shift == shift_val) if shift_val is not None else AdminTaskTemplate.shift.is_(None),
+            (AdminTaskTemplate.department == dept_val) if dept_val is not None else AdminTaskTemplate.department.is_(None),
+        )
+        if db.query(exists_q.exists()).scalar():
+            skipped += 1
+            continue
+
+        # Oluşturulacak şablonu hazırla (önizleme için de kullanacağız)
+        t = AdminTaskTemplate(
+            title=" ".join((row.title_raw or "").split()).strip(),  # ekranda düzgün görünsün
+            shift=shift_val,
+            department=dept_val,
+            default_assignee=None,  # mevcut görevdeki kişi sabitlenmesin diye boş bırakıyoruz
+            is_active=True,
+        )
+        if dry_run:
+            preview_items.append(t)
+        else:
+            db.add(t)
+            created += 1
+
+    if not dry_run:
+        db.commit()
+
+    return BackfillResult(
+        created=created,
+        skipped=skipped,
+        preview=[TemplateOut.model_validate(x, from_attributes=True) for x in preview_items] if dry_run else None
+    )
