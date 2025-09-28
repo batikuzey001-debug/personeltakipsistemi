@@ -17,30 +17,19 @@ import AdminTasks from "./pages/AdminTasks";
 import AdminTaskTemplates from "./pages/AdminTaskTemplates";
 import AdminBotSettings from "./pages/AdminBotSettings";
 import Notifications from "./pages/Notifications";
-import ShiftPlanner from "./pages/ShiftPlanner"; // ⬅️ EKLENDİ
+import ShiftPlanner from "./pages/ShiftPlanner";
+import Shifts from "./pages/Shifts"; // ⬅️ eklendi
 
-/** Basit Error Boundary — beklenmeyen hatalarda beyaz ekran yerine uyarı gösterir */
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
-  constructor(props: { children: React.ReactNode }) {
-    super(props);
-    this.state = { hasError: false };
-  }
-  static getDerivedStateFromError() {
-    return { hasError: true };
-  }
-  componentDidCatch(error: any, info: any) {
-    console.error("[ErrorBoundary]", error, info);
-  }
+  constructor(props: { children: React.ReactNode }) { super(props); this.state = { hasError: false }; }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(error: any, info: any) { console.error("[ErrorBoundary]", error, info); }
   render() {
     if (this.state.hasError) {
-      return (
-        <div style={{ maxWidth: 960, margin: "4rem auto", padding: 16, border: "1px solid #f0dada", borderRadius: 12, background: "#fff" }}>
-          <h2 style={{ marginTop: 0 }}>Bir şeyler ters gitti</h2>
-          <p style={{ color: "#6b7280" }}>
-            Sayfa yüklenirken hata oluştu. Lütfen sayfayı yenileyin. Sorun devam ederse Console/Network çıktısını iletin.
-          </p>
-        </div>
-      );
+      return (<div style={{ maxWidth: 960, margin: "4rem auto", padding: 16, border: "1px solid #f0dada", borderRadius: 12, background: "#fff" }}>
+        <h2 style={{ marginTop: 0 }}>Bir şeyler ters gitti</h2>
+        <p style={{ color: "#6b7280" }}>Sayfa yüklenirken hata oluştu. Lütfen sayfayı yenileyin.</p>
+      </div>);
     }
     return this.props.children;
   }
@@ -66,21 +55,17 @@ export default function App() {
         <Route path="/employee-detail" element={<Protected><Layout><EmployeeDetail /></Layout></Protected>} />
         <Route path="/employees/:employee_id" element={<Protected><Layout><EmployeeProfile /></Layout></Protected>} />
 
-        {/* Tek rapor sayfası */}
         <Route path="/reports/daily" element={<Protected><Layout><ReportsDaily /></Layout></Protected>} />
 
-        {/* Admin Görevleri */}
         <Route path="/admin/tasks" element={<Protected><Layout><AdminTasks /></Layout></Protected>} />
         <Route path="/admin/tasks/templates" element={<Protected><Layout><AdminTaskTemplates /></Layout></Protected>} />
 
-        {/* Shift Planlama */}
+        <Route path="/admin/shifts" element={<Protected><Layout><Shifts /></Layout></Protected>} />   {/* yeni */}
         <Route path="/shift-planner" element={<Protected><Layout><ShiftPlanner /></Layout></Protected>} />
 
-        {/* Bot İşlemleri & Bildirim Yönetimi */}
         <Route path="/admin/bot" element={<Protected><Layout><AdminBotSettings /></Layout></Protected>} />
         <Route path="/admin/notifications" element={<Protected><Layout><Notifications /></Layout></Protected>} />
 
-        {/* Eski yolları yeni sayfaya yönlendir */}
         <Route path="/reports/bonus/close-time" element={<Navigate to="/reports/daily" replace />} />
         <Route path="/reports/finance/close-time" element={<Navigate to="/reports/daily" replace />} />
 
