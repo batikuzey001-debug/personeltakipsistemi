@@ -17,8 +17,7 @@ import AdminTasks from "./pages/AdminTasks";
 import AdminTaskTemplates from "./pages/AdminTaskTemplates";
 import AdminBotSettings from "./pages/AdminBotSettings";
 import Notifications from "./pages/Notifications";
-import ShiftPlanner from "./pages/ShiftPlanner";
-import Shifts from "./pages/Shifts"; // ⬅️ eklendi
+import ShiftPlanner from "./pages/ShiftPlanner"; // planlayıcı kaldı
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
   constructor(props: { children: React.ReactNode }) { super(props); this.state = { hasError: false }; }
@@ -26,10 +25,12 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   componentDidCatch(error: any, info: any) { console.error("[ErrorBoundary]", error, info); }
   render() {
     if (this.state.hasError) {
-      return (<div style={{ maxWidth: 960, margin: "4rem auto", padding: 16, border: "1px solid #f0dada", borderRadius: 12, background: "#fff" }}>
-        <h2 style={{ marginTop: 0 }}>Bir şeyler ters gitti</h2>
-        <p style={{ color: "#6b7280" }}>Sayfa yüklenirken hata oluştu. Lütfen sayfayı yenileyin.</p>
-      </div>);
+      return (
+        <div style={{ maxWidth: 960, margin: "4rem auto", padding: 16, border: "1px solid #f0dada", borderRadius: 12, background: "#fff" }}>
+          <h2 style={{ marginTop: 0 }}>Bir şeyler ters gitti</h2>
+          <p style={{ color: "#6b7280" }}>Sayfa yüklenirken hata oluştu. Lütfen sayfayı yenileyin.</p>
+        </div>
+      );
     }
     return this.props.children;
   }
@@ -60,7 +61,7 @@ export default function App() {
         <Route path="/admin/tasks" element={<Protected><Layout><AdminTasks /></Layout></Protected>} />
         <Route path="/admin/tasks/templates" element={<Protected><Layout><AdminTaskTemplates /></Layout></Protected>} />
 
-        <Route path="/admin/shifts" element={<Protected><Layout><Shifts /></Layout></Protected>} />   {/* yeni */}
+        {/* Yalnız Shift Planlama */}
         <Route path="/shift-planner" element={<Protected><Layout><ShiftPlanner /></Layout></Protected>} />
 
         <Route path="/admin/bot" element={<Protected><Layout><AdminBotSettings /></Layout></Protected>} />
