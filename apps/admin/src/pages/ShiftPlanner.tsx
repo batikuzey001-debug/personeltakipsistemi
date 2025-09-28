@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 const API = (import.meta.env.VITE_API_BASE_URL as string) || "";
 
 /* Types */
-type Employee = { id: string; full_name: string; department?: string | null };
+type Employee = { pk: number; employee_id: string; full_name: string; department?: string | null };
 type Assign = { employee_id: string; date: string; week_start: string; shift_def_id: number | null; status: "ON" | "OFF" };
 type WeekStatus = "draft" | "published";
 type ShiftWeek = { week_start: string; status: WeekStatus; published_at?: string | null; published_by?: string | null };
@@ -25,11 +25,8 @@ function mondayOf(d: Date): Date { const x = new Date(d.getFullYear(), d.getMont
 function addDays(d: Date, n: number): Date { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function pad2(n: number) { return n.toString().padStart(2, "0"); }
 
-/* 24 adet 8 saatlik slot key’i (UI) */
-const SLOT_KEYS = Array.from({ length: 24 }, (_, h) => {
-  const s = `${pad2(h)}:00`, e = `${pad2((h + 8) % 24)}:00`;
-  return `${s}-${e}`;
-});
+/* 24×8 saat slot */
+const SLOT_KEYS = Array.from({ length: 24 }, (_, h) => `${pad2(h)}:00-${pad2((h + 8) % 24)}:00`);
 
 export default function ShiftPlanner() {
   // Hafta
@@ -47,7 +44,7 @@ export default function ShiftPlanner() {
   const [week, setWeek] = useState<ShiftWeek | null>(null);
   const [defs, setDefs] = useState<Record<string, number>>({}); // "HH:MM-HH:MM" -> shift_def_id
 
-  // Hücre sözlüğü: "EMP|YYYY-MM-DD" -> "OFF" veya "HH:MM-HH:MM"
+  // Hücre sözlüğü: **pk** ile anahtar → "PK|YYYY-MM-DD"
   const [cells, setCells] = useState<Record<string, string>>({});
 
   // UI
@@ -56,13 +53,14 @@ export default function ShiftPlanner() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>("");
 
-  // Departman grupları + aç/kapa
+  // Departman grupları
   const byDept = useMemo(() => {
     const map: Record<string, Employee[]> = {};
     for (const e of emps) (map[e.department || "—"] ||= []).push(e);
-    for (const k of Object.keys(map)) map[k].sort((a, b) => (a.full_name || a.id).localeCompare(b.full_name || b.id, "tr"));
+    for (const k of Object.keys(map)) map[k].sort((a, b) => (a.full_name || a.employee_id).localeCompare(b.full_name || b.employee_id, "tr"));
     return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], "tr"));
   }, [emps]);
+
   const [openDept, setOpenDept] = useState<Record<string, boolean>>({});
   useEffect(() => {
     const o: Record<string, boolean> = {};
@@ -70,7 +68,7 @@ export default function ShiftPlanner() {
     setOpenDept(o);
   }, [byDept.length]);
 
-  // Backend /shifts seed + id eşlemesi
+  // /shifts seed + id map
   async function ensureDefs(): Promise<Record<string, number>> {
     const map: Record<string, number> = {};
     let existing: ShiftDef[] = [];
@@ -103,10 +101,13 @@ export default function ShiftPlanner() {
       setDefs(map);
 
       const dict: Record<string, string> = {};
-      for (const emp of e) for (const d of days) dict[`${emp.id}|${d.iso}`] = "OFF";
+      for (const emp of e) for (const d of days) dict[`${emp.pk}|${d.iso}`] = "OFF";
       for (const row of a) {
+        // row.employee_id = iş kodu. Eşleşen employee'yi pk bulmak için listeyi kullanalım.
+        const emp = e.find(x => x.employee_id === row.employee_id);
+        if (!emp) continue;
         const uiKey = row.shift_def_id ? Object.keys(map).find(k => map[k] === row.shift_def_id) : undefined;
-        dict[`${row.employee_id}|${row.date}`] = row.status === "ON" && uiKey ? uiKey : "OFF";
+        dict[`${emp.pk}|${row.date}`] = row.status === "ON" && uiKey ? uiKey : "OFF";
       }
       setCells(dict);
     } catch (x: any) {
@@ -115,22 +116,22 @@ export default function ShiftPlanner() {
   }
   useEffect(() => { load(); /* eslint-disable-line */ }, [weekStartISO]);
 
-  // Sadece tek hücreyi güncelle
-  function setCell(empId: string, iso: string, value: string) {
-    const k = `${empId}|${iso}`;
+  // Tek hücre güncelle
+  function setCell(pk: number, iso: string, value: string) {
+    const k = `${pk}|${iso}`;
     setCells(prev => (prev[k] === value ? prev : { ...prev, [k]: value }));
   }
 
-  // Kaydet — emps ve days üzerinden payload kurulur. employee_id DAİMA set edilir.
+  // Kaydet — payload’ı **employee_id** ile gönder
   async function save() {
     setSaving(true); setErr(null);
     try {
       const payload: Assign[] = [];
       for (const emp of emps) {
         for (const d of days) {
-          const v = cells[`${emp.id}|${d.iso}`] || "OFF";
+          const v = cells[`${emp.pk}|${d.iso}`] || "OFF";
           payload.push({
-            employee_id: emp.id,
+            employee_id: emp.employee_id,                    // iş kodu
             date: d.iso,
             week_start: weekStartISO,
             shift_def_id: v === "OFF" ? null : (defs[v] ?? null),
@@ -203,24 +204,24 @@ export default function ShiftPlanner() {
                 <span style={{ fontSize: 18 }}>{isOpen ? "▾" : "▸"}</span>
               </div>
 
-              {isOpen && list.map((emp, i) => (
-                <div key={emp.id} style={{ display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #eef1f4", background: i % 2 ? "#fff" : "#fcfcfc" }}>
+              {isOpen && list.map((emp) => (
+                <div key={emp.pk} style={{ display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #eef1f4" }}>
                   <div style={{ padding: 10 }}>
-                    <div style={{ fontWeight: 700 }}>{emp.full_name || emp.id}</div>
-                    <div style={{ fontSize: 12, color: "#6b7280" }}>{emp.id}</div>
+                    <div style={{ fontWeight: 700 }}>{emp.full_name || emp.employee_id}</div>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>{emp.employee_id}</div>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(140px,1fr))" }}>
                     {days.map((d) => {
-                      const key = `${emp.id}|${d.iso}`;
+                      const key = `${emp.pk}|${d.iso}`;              // benzersiz anahtar
                       const value = cells[key] ?? "OFF";
                       return (
                         <div key={key} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
                           <select
-                            key={`sel-${key}-${value}`}
-                            id={`sel-${key}`} name={`sel-${key}`}
+                            key={`sel-${key}-${value}`}               // remount
+                            id={`sel-${key}`} name={`sel-${key}`}     // unique → autofill yok
                             autoComplete="off"
                             value={value}
-                            onChange={(e) => setCell(emp.id, d.iso, e.target.value)}
+                            onChange={(e) => setCell(emp.pk, d.iso, e.target.value)}
                             disabled={!isDraft}
                             style={{ width: "100%" }}
                           >
