@@ -1,19 +1,142 @@
 # apps/api/app/api/routes_admin_tasks.py
 from __future__ import annotations
+from datetime import datetime, date
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
+from pytz import timezone
 
 from app.deps import get_db, RolesAllowed
-from app.db.models_admin_tasks import AdminTaskTemplate  # id, title, shift, department, default_assignee, is_active
+from app.db.models_admin_tasks import (
+    AdminTask,
+    AdminTaskTemplate,
+    TaskStatus,  # enum
+)
 
-router = APIRouter(prefix="/admin-tasks", tags=["admin_tasks:templates"])
+router = APIRouter(prefix="/admin-tasks", tags=["admin_tasks"])
 
-# ---------- SCHEMAS (Pydantic v2 uyumlu) ----------
+IST = timezone("Europe/Istanbul")
+
+# ==============================
+#           TASKS
+# ==============================
+
+class TaskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    date: date
+    shift: Optional[str] = None
+    title: str
+    department: Optional[str] = None
+    assignee_employee_id: Optional[str] = None
+    due_ts: Optional[datetime] = None
+    status: TaskStatus
+    is_done: bool
+    done_at: Optional[datetime] = None
+    done_by: Optional[str] = None
+
+def _to_task_out(t: AdminTask) -> TaskOut:
+    return TaskOut.model_validate(t, from_attributes=True)
+
+@router.get(
+    "",
+    response_model=List[TaskOut],
+    dependencies=[Depends(RolesAllowed("super_admin", "admin", "manager"))],
+)
+def list_tasks(
+    d: Optional[str] = Query(None, description="YYYY-MM-DD (default: today IST)"),
+    shift: Optional[str] = Query(None),
+    dept: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    # Hedef gün (IST)
+    if d:
+        try:
+            y, m, dd = map(int, d.split("-"))
+            target = date(y, m, dd)
+        except Exception:
+            raise HTTPException(status_code=400, detail="d must be YYYY-MM-DD")
+    else:
+        target = datetime.now(IST).date()
+
+    qy = db.query(AdminTask).filter(AdminTask.date == target)
+    if shift:
+        qy = qy.filter(AdminTask.shift == shift)
+    if dept:
+        qy = qy.filter(AdminTask.department == dept)
+
+    qy = qy.order_by(AdminTask.shift.asc().nulls_last(), AdminTask.title.asc())
+    return [_to_task_out(t) for t in qy.all()]
+
+class TickIn(BaseModel):
+    who: Optional[str] = None
+
+@router.patch(
+    "/{task_id}/tick",
+    response_model=TaskOut,
+    dependencies=[Depends(RolesAllowed("super_admin", "admin", "manager"))],
+)
+def tick_task(task_id: int, body: TickIn, db: Session = Depends(get_db)):
+    t: AdminTask | None = db.query(AdminTask).get(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="task not found")
+    if t.is_done:
+        return _to_task_out(t)
+
+    now = datetime.utcnow()
+    t.is_done = True
+    t.done_at = now
+    t.done_by = (body.who or "admin").strip()
+
+    # Gecikme/normal durumu güncelle
+    if t.due_ts and now > t.due_ts:
+        t.status = TaskStatus.late
+    else:
+        t.status = TaskStatus.done
+
+    db.commit()
+    db.refresh(t)
+    return _to_task_out(t)
+
+# (İsterseniz anlık oluşturma ucu da tutabilirsiniz; UI'de kullanmıyor olsak da API hazır dursun)
+class TaskCreateIn(BaseModel):
+    title: str = Field(..., min_length=2, max_length=200)
+    shift: Optional[str] = None
+    department: Optional[str] = None
+    assignee_employee_id: Optional[str] = None
+
+@router.post(
+    "",
+    response_model=TaskOut,
+    dependencies=[Depends(RolesAllowed("super_admin", "admin", "manager"))],
+)
+def create_task(body: TaskCreateIn, db: Session = Depends(get_db)):
+    today = datetime.now(IST).date()
+    t = AdminTask(
+        date=today,
+        shift=body.shift,
+        title=body.title.strip(),
+        department=body.department,
+        assignee_employee_id=body.assignee_employee_id,
+        due_ts=None,  # due_ts hesaplamak isterseniz vardiyadan türetebilirsiniz
+        status=TaskStatus.open,
+        is_done=False,
+        done_at=None,
+        done_by=None,
+    )
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return _to_task_out(t)
+
+# ==============================
+#         TEMPLATES
+# ==============================
+
 class TemplateOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)  # <- v2: orm_mode yerine
+    model_config = ConfigDict(from_attributes=True)
     id: int
     title: str
     shift: Optional[str] = None
@@ -38,14 +161,9 @@ class TemplateUpdate(BaseModel):
 class TemplateBulkIn(BaseModel):
     items: List[TemplateCreate]
 
-
-# ---------- HELPERS ----------
-def _to_out(t: AdminTaskTemplate) -> TemplateOut:
-    # v2: from_orm yerine model_validate(..., from_attributes=True)
+def _to_tpl_out(t: AdminTaskTemplate) -> TemplateOut:
     return TemplateOut.model_validate(t, from_attributes=True)
 
-
-# ---------- ROUTES ----------
 @router.get(
     "/templates",
     response_model=List[TemplateOut],
@@ -69,12 +187,8 @@ def list_templates(
             | (AdminTaskTemplate.default_assignee.ilike(term))
             | (AdminTaskTemplate.department.ilike(term))
         )
-    qy = qy.order_by(
-        AdminTaskTemplate.shift.asc().nulls_last(),
-        AdminTaskTemplate.title.asc(),
-    )
-    return [_to_out(t) for t in qy.all()]
-
+    qy = qy.order_by(AdminTaskTemplate.shift.asc().nulls_last(), AdminTaskTemplate.title.asc())
+    return [_to_tpl_out(t) for t in qy.all()]
 
 @router.post(
     "/templates",
@@ -92,8 +206,7 @@ def create_template(body: TemplateCreate, db: Session = Depends(get_db)):
     db.add(t)
     db.commit()
     db.refresh(t)
-    return _to_out(t)
-
+    return _to_tpl_out(t)
 
 @router.post(
     "/templates/bulk",
@@ -118,8 +231,7 @@ def create_templates_bulk(payload: TemplateBulkIn, db: Session = Depends(get_db)
     db.commit()
     for t in created:
         db.refresh(t)
-    return [_to_out(t) for t in created]
-
+    return [_to_tpl_out(t) for t in created]
 
 @router.patch(
     "/templates/{tpl_id}",
@@ -144,8 +256,7 @@ def update_template(tpl_id: int, body: TemplateUpdate, db: Session = Depends(get
 
     db.commit()
     db.refresh(t)
-    return _to_out(t)
-
+    return _to_tpl_out(t)
 
 @router.delete(
     "/templates/{tpl_id}",
