@@ -7,6 +7,7 @@ IST = pytz.timezone("Europe/Istanbul")
 
 ADMIN_TASKS_TG_TOKEN = os.getenv("ADMIN_TASKS_TG_TOKEN", "")
 ADMIN_TASKS_TG_CHAT_ID = os.getenv("ADMIN_TASKS_TG_CHAT_ID", "")
+BONUS_TG_CHAT_ID = os.getenv("BONUS_TG_CHAT_ID", "")
 
 # Fallback vardiya bitiş saatleri (isteğe göre DB'den de okunabilir)
 SHIFT_END = {
