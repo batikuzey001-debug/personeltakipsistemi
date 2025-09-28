@@ -12,10 +12,10 @@ type Task = {
   title: string;
   department: string | null;
   assignee_employee_id: string | null;
-  due_ts: string | null;
+  due_ts: string | null;       // UTC ISO
   status: "open" | "done" | "late";
   is_done: boolean;
-  done_at: string | null;
+  done_at: string | null;      // UTC ISO
   done_by: string | null;
 };
 
@@ -59,7 +59,7 @@ export default function AdminTasks() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>("");
 
-  // Vardiya açık/kapalı durumları (hook'lar TOP-LEVEL'de!)
+  // Vardiya aç/kapalı durumları (TOP-LEVEL state)
   const SHIFT_ORDER = ["Gece", "Sabah", "Öğlen", "Akşam", "—"] as const;
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({
     Gece: true,
@@ -105,7 +105,7 @@ export default function AdminTasks() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date, shift, dept, search]);
 
-  // Client-side arama
+  // Arama
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return rows;
@@ -180,6 +180,14 @@ export default function AdminTasks() {
     letterSpacing: ".3px",
     marginBottom: 6,
   };
+  const btnGhost: React.CSSProperties = {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #e5e7eb",
+    background: "#fff",
+    color: "#111",
+    cursor: "pointer",
+  };
   const btnPrimary: React.CSSProperties = {
     padding: "8px 12px",
     borderRadius: 10,
@@ -187,14 +195,6 @@ export default function AdminTasks() {
     background: "#2563eb",
     color: "#fff",
     fontWeight: 700,
-    cursor: "pointer",
-  };
-  const btnGhost: React.CSSProperties = {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    color: "#111",
     cursor: "pointer",
   };
   const chip = (active: boolean): React.CSSProperties => ({
@@ -456,7 +456,7 @@ export default function AdminTasks() {
             borderRadius: 12,
             background: err ? "#fee2e2" : "#dcfce7",
             color: err ? "#7f1d1d" : "#065f46",
-            boxShadow: "0 6px 20px rgba(0,0,0,.08)",
+            boxShadow: "0 6px 20px rgba(16,24,40,.08)",
             fontSize: 13,
           }}
         >
