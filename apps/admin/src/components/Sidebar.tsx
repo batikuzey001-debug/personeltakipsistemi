@@ -25,8 +25,9 @@ export default function Sidebar() {
     { to: "/reports/daily", label: "Rapor • Günlük (Bonus/Finans)" },
     { to: "/admin/tasks", label: "Admin Görevleri" },
     { to: "/admin/tasks/templates", label: "Görev Şablonları" },
+    { to: "/shift-planner", label: "Shift Planlama" },   // ⬅️ EKLENDİ
     { to: "/admin/bot", label: "Bot İşlemleri" },
-    { to: "/admin/notifications", label: "Bildirimler" }, // ← EKLENDİ
+    { to: "/admin/notifications", label: "Bildirimler" },
     { to: "/identities", label: "Kişi Eşleştirme" },
     { to: "/users", label: "Kullanıcılar" },
   ];
