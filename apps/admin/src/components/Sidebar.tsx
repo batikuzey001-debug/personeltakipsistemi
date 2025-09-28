@@ -2,15 +2,7 @@
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 
-const linkStyle: React.CSSProperties = {
-  display: "block",
-  padding: "10px 12px",
-  borderRadius: 8,
-  textDecoration: "none",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-};
+const linkStyle: React.CSSProperties = { display:"block", padding:"10px 12px", borderRadius:8, textDecoration:"none", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" };
 
 export default function Sidebar() {
   const { auth } = useAuth();
@@ -20,12 +12,12 @@ export default function Sidebar() {
     { to: "/employees", label: "Personeller" },
   ];
 
-  // Yönetim menüsü (rapor + görevler + bot/bildirim ayarları)
   const adminOnly = [
     { to: "/reports/daily", label: "Rapor • Günlük (Bonus/Finans)" },
     { to: "/admin/tasks", label: "Admin Görevleri" },
     { to: "/admin/tasks/templates", label: "Görev Şablonları" },
-    { to: "/shift-planner", label: "Shift Planlama" },   // ⬅️ EKLENDİ
+    { to: "/admin/shifts", label: "Vardiya Tanımları" },   // ⬅️ eklendi
+    { to: "/shift-planner", label: "Shift Planlama" },
     { to: "/admin/bot", label: "Bot İşlemleri" },
     { to: "/admin/notifications", label: "Bildirimler" },
     { to: "/identities", label: "Kişi Eşleştirme" },
@@ -35,28 +27,10 @@ export default function Sidebar() {
   const items = auth.role === "super_admin" ? [...base, ...adminOnly] : base;
 
   return (
-    <aside
-      style={{
-        width: 220,
-        borderRight: "1px solid #eee",
-        padding: 12,
-        boxSizing: "border-box",
-        height: "100%",
-        overflowY: "auto",
-        background: "#fff",
-      }}
-    >
+    <aside style={{ width:220, borderRight:"1px solid #eee", padding:12, boxSizing:"border-box", height:"100%", overflowY:"auto", background:"#fff" }}>
       <nav>
-        {items.map((i) => (
-          <NavLink
-            key={i.to}
-            to={i.to}
-            style={({ isActive }) => ({
-              ...linkStyle,
-              background: isActive ? "#f2f2f2" : "transparent",
-              color: "#111",
-            })}
-          >
+        {items.map(i=>(
+          <NavLink key={i.to} to={i.to} style={({ isActive }) => ({ ...linkStyle, background: isActive ? "#f2f2f2" : "transparent", color:"#111" })}>
             {i.label}
           </NavLink>
         ))}
