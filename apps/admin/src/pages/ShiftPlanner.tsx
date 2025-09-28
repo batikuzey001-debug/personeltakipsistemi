@@ -27,7 +27,8 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json() as Promise<T>;
 }
 
-/* ---- Date helpers (Europe/Istanbul varsayımı) ---- */
+/* ---- Date helpers ---- */
+const fmtTR = new Intl.DateTimeFormat("tr-TR", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Europe/Istanbul" });
 function toISODate(d: Date): string {
   const z = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
   return z.toISOString().slice(0, 10);
@@ -35,7 +36,7 @@ function toISODate(d: Date): string {
 function mondayOf(d: Date): Date {
   const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const day = x.getDay(); // 0=Sun..6=Sat
-  const diff = (day === 0 ? -6 : 1) - day; // Monday
+  const diff = (day === 0 ? -6 : 1) - day;
   x.setDate(x.getDate() + diff);
   return x;
 }
@@ -47,37 +48,45 @@ function addDays(d: Date, n: number): Date {
 
 /* ---- UI ---- */
 export default function ShiftPlanner() {
-  // hafta seçimi
+  // Hafta seçimi
   const [monday, setMonday] = useState<Date>(() => mondayOf(new Date()));
   const weekStartISO = toISODate(monday);
-  const days: { label: string; iso: string }[] = useMemo(() => {
-    const labels = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cts", "Paz"];
-    return Array.from({ length: 7 }, (_, i) => {
-      const d = addDays(monday, i);
-      return { label: labels[i], iso: toISODate(d) };
-    });
-  }, [monday]);
+  const weekEnd = addDays(monday, 6);
+  const weekTitle = `${fmtTR.format(monday)}  ➜  ${fmtTR.format(weekEnd)}`;
 
+  const dayLabels = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cts", "Paz"];
+  const days: { label: string; iso: string }[] = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => ({ label: dayLabels[i], iso: toISODate(addDays(monday, i)) })),
+    [monday]
+  );
+
+  // Data
   const [emps, setEmps] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<ShiftDef[]>([]);
-  const [assigns, setAssigns] = useState<Record<string, Record<string, Assign>>>({}); // emp -> date -> Assign
+  const [assigns, setAssigns] = useState<Record<string, Record<string, Assign>>>({});
   const [week, setWeek] = useState<ShiftWeek | null>(null);
 
+  // UI state
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>("");
 
-  // departman grupları
+  // Departman grupları + açılır/kapanır durum
   const byDept = useMemo(() => {
     const map: Record<string, Employee[]> = {};
-    for (const e of emps) {
-      const k = e.department || "—";
-      (map[k] ||= []).push(e);
-    }
+    for (const e of emps) (map[e.department || "—"] ||= []).push(e);
     for (const k of Object.keys(map)) map[k].sort((a, b) => (a.full_name || a.id).localeCompare(b.full_name || b.id, "tr"));
     return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], "tr"));
   }, [emps]);
+  const [openDept, setOpenDept] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    // İlk yüklemede tüm departmanlar açık
+    const init: Record<string, boolean> = {};
+    for (const [d] of byDept) init[d] = true;
+    setOpenDept(init);
+  }, [byDept.length]); // departman sayısı değişirse yeniden kur
 
   async function load() {
     setLoading(true);
@@ -94,14 +103,18 @@ export default function ShiftPlanner() {
       setWeek(w);
 
       const map: Record<string, Record<string, Assign>> = {};
-      for (const emp of e) map[emp.id] = {};
-      for (const d of days) for (const emp of e) map[emp.id][d.iso] = {
-        employee_id: emp.id,
-        date: d.iso,
-        week_start: weekStartISO,
-        shift_def_id: null,
-        status: "OFF",
-      };
+      for (const emp of e) {
+        map[emp.id] = {};
+        for (const d of days) {
+          map[emp.id][d.iso] = {
+            employee_id: emp.id,
+            date: d.iso,
+            week_start: weekStartISO,
+            shift_def_id: null,
+            status: "OFF",
+          };
+        }
+      }
       for (const row of a) {
         (map[row.employee_id] ||= {})[row.date] = { ...row };
       }
@@ -119,7 +132,13 @@ export default function ShiftPlanner() {
     setAssigns((prev) => {
       const copy = { ...prev };
       const row = { ...(copy[empId] || {}) };
-      const cur = { ...(row[dayISO] || { employee_id: empId, date: dayISO, week_start: weekStartISO, shift_def_id: null, status: "OFF" as const }) };
+      const cur: Assign = row[dayISO] || {
+        employee_id: empId,
+        date: dayISO,
+        week_start: weekStartISO,
+        shift_def_id: null,
+        status: "OFF",
+      };
       if (val === "OFF") {
         cur.shift_def_id = null;
         cur.status = "OFF";
@@ -172,19 +191,33 @@ export default function ShiftPlanner() {
   }
 
   const isDraft = week?.status !== "published";
+  const noShifts = shifts.length === 0;
 
-  const page: React.CSSProperties = { maxWidth: 1200, margin: "0 auto", padding: 16, display: "grid", gap: 12 };
+  // Styles
+  const page: React.CSSProperties = { maxWidth: 1280, margin: "0 auto", padding: 16, display: "grid", gap: 12 };
   const card: React.CSSProperties = { border: "1px solid #eef0f4", borderRadius: 12, background: "#fff", boxShadow: "0 6px 24px rgba(16,24,40,0.04)" };
+  const badge: React.CSSProperties = {
+    padding: "2px 8px",
+    borderRadius: 999,
+    fontWeight: 800,
+    fontSize: 12,
+    background: isDraft ? "#fff7ed" : "#ecfdf5",
+    border: `1px solid ${isDraft ? "#fdba74" : "#a7f3d0"}`,
+    color: isDraft ? "#9a3412" : "#065f46",
+  };
 
   return (
     <div style={page}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {/* Week header — daha belirgin */}
+      <div style={{ ...card, padding: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button onClick={() => setMonday(addDays(monday, -7))}>◀ Önceki</button>
-          <strong style={{ fontSize: 18 }}>
-            Hafta: {weekStartISO} (Pzt) – {toISODate(addDays(monday, 6))} (Paz) {isDraft ? "• DRAFT" : "• PUBLISHED"}
-          </strong>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 900 }}>{weekTitle}</div>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>Hafta başlangıcı (Pzt): {weekStartISO}</div>
+          </div>
           <button onClick={() => setMonday(addDays(monday, 7))}>Sonraki ▶</button>
+          <span style={badge}>{isDraft ? "DRAFT" : "PUBLISHED"}</span>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={load} disabled={loading}>{loading ? "Yükleniyor…" : "Yenile"}</button>
@@ -193,55 +226,84 @@ export default function ShiftPlanner() {
         </div>
       </div>
 
+      {/* Uyarı: vardiya listesi boşsa */}
+      {noShifts && (
+        <div style={{ ...card, padding: 12, borderColor: "#fee2e2", background: "#fef2f2", color: "#7f1d1d" }}>
+          Tanımlı vardiya yok. Önce <strong>/shifts</strong> sayfasından vardiya tanımları ekleyin. (Örn: 08:00–16:00, 09:00–17:00)
+        </div>
+      )}
+
       <div style={{ ...card, overflow: "hidden" }}>
         {/* Header row */}
-        <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", borderBottom: "1px solid #eef1f4", background: "#f9fafb" }}>
-          <div style={{ padding: 10, fontWeight: 800 }}>Personel</div>
+        <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #eef1f4", background: "#f9fafb" }}>
+          <div style={{ padding: 10, fontWeight: 800 }}>Departman / Personel</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(120px,1fr))" }}>
             {days.map((d) => (
-              <div key={d.iso} style={{ padding: 10, fontWeight: 800, borderLeft: "1px solid #eef1f4" }}>{d.label}<div style={{ fontSize: 12, color: "#6b7280" }}>{d.iso}</div></div>
+              <div key={d.iso} style={{ padding: 10, fontWeight: 800, borderLeft: "1px solid #eef1f4" }}>
+                {d.label}
+                <div style={{ fontSize: 12, color: "#6b7280" }}>{d.iso}</div>
+              </div>
             ))}
           </div>
         </div>
 
-        {/* Body */}
-        {byDept.map(([deptName, list], di) => (
-          <div key={deptName}>
-            {/* Department row */}
-            <div style={{ padding: 10, background: "#fffbe6", borderBottom: "1px solid #f1e9c6", fontWeight: 800 }}>{deptName}</div>
-            {list.map((emp, i) => (
-              <div key={emp.id} style={{ display: "grid", gridTemplateColumns: "220px 1fr", borderBottom: "1px solid #eef1f4", background: (i + di) % 2 ? "#fff" : "#fcfcfc" }}>
-                <div style={{ padding: 10 }}>
-                  <div style={{ fontWeight: 700 }}>{emp.full_name || emp.id}</div>
-                  <div style={{ fontSize: 12, color: "#6b7280" }}>{emp.id}</div>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(120px,1fr))" }}>
-                  {days.map((d) => {
-                    const cell = assigns[emp.id]?.[d.iso];
-                    const value = cell?.status === "OFF" ? "OFF" : (cell?.shift_def_id ? String(cell.shift_def_id) : "OFF");
-                    return (
-                      <div key={d.iso} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
-                        <select
-                          value={value}
-                          onChange={(e) => setCell(emp.id, d.iso, e.target.value)}
-                          disabled={!isDraft}
-                          style={{ width: "100%" }}
-                        >
-                          <option value="OFF">OFF</option>
-                          {shifts.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.name} ({s.start_time}-{s.end_time})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    );
-                  })}
-                </div>
+        {/* Body with collapsible departments */}
+        {byDept.map(([deptName, list]) => {
+          const isOpen = openDept[deptName] ?? true;
+          return (
+            <div key={deptName}>
+              {/* Department header with toggle */}
+              <div
+                onClick={() => setOpenDept((s) => ({ ...s, [deptName]: !isOpen }))}
+                style={{
+                  padding: "10px 12px",
+                  background: "#fffbe6",
+                  borderBottom: "1px solid #f1e9c6",
+                  fontWeight: 900,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span>{deptName} — {list.length} kişi</span>
+                <span style={{ fontSize: 18 }}>{isOpen ? "▾" : "▸"}</span>
               </div>
-            ))}
-          </div>
-        ))}
+
+              {isOpen && list.map((emp, i) => (
+                <div key={emp.id} style={{ display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #eef1f4", background: i % 2 ? "#fff" : "#fcfcfc" }}>
+                  <div style={{ padding: 10 }}>
+                    <div style={{ fontWeight: 700 }}>{emp.full_name || emp.id}</div>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>{emp.id}</div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(120px,1fr))" }}>
+                    {days.map((d) => {
+                      const cell = assigns[emp.id]?.[d.iso];
+                      const value = cell?.status === "OFF" ? "OFF" : (cell?.shift_def_id ? String(cell.shift_def_id) : "OFF");
+                      return (
+                        <div key={d.iso} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
+                          <select
+                            value={value}
+                            onChange={(e) => setCell(emp.id, d.iso, e.target.value)}
+                            disabled={!isDraft}
+                            style={{ width: "100%" }}
+                          >
+                            <option value="OFF">OFF</option>
+                            {shifts.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name} ({s.start_time}-{s.end_time})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })}
 
         {!loading && !emps.length && (
           <div style={{ padding: 16, color: "#6b7280" }}>Personel bulunamadı.</div>
