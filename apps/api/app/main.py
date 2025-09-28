@@ -8,22 +8,22 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.session import engine
 
-# MODELLER (create_all tüm tabloları görsün)
-import app.models.events                 # raw_messages, events
-import app.models.facts                  # facts_daily, facts_monthly
-import app.models.identities             # employee_identities
-import app.models.models                 # employees (department + kart alanları)
+# MODELLER
+import app.models.events
+import app.models.facts
+import app.models.identities
+import app.models.models
 
 # Admin & Bot modelleri
-import app.db.models_admin_tasks         # admin_tasks, admin_task_templates
-import app.db.models_admin_settings      # admin_settings (bot ayarları)
-import app.db.models_admin_notifications # admin_notifications (bildirim şablonları)
-import app.db.models_shifts              # shift_definitions, shift_weeks, shift_assignments
+import app.db.models_admin_tasks
+import app.db.models_admin_settings
+import app.db.models_admin_notifications
+import app.db.models_shifts
 
 # ROUTERLAR
 from app.api.routes_auth import router as auth_router
 from app.api.routes_org import router as org_router
-from app.api.route_seed import router as seed_router              # /seed/*
+from app.api.route_seed import router as seed_router
 from app.api.routes_users import router as users_router
 from app.api.routes_telegram import router as telegram_router
 from app.api.routes_debug import router as debug_router
@@ -32,14 +32,18 @@ from app.api.routes_identities import router as identities_router
 from app.api.routes_employee_view import router as employee_view_router
 from app.api.routes_reports import router as reports_router
 from app.api.routes_admin_tasks import router as admin_tasks_router
-from app.api.routes_admin_bot import router as admin_bot_router          # /admin-bot/*
+from app.api.routes_admin_bot import router as admin_bot_router
 from app.api.routes_admin_notifications import router as admin_notify_router
-from app.api.routes_shifts import router as shifts_router                 # ⬅️ debug/seed uçları burada
 
-# Scheduler (geciken görev tarayıcı + attendance + bonus)
+# ⬇️ SHIFT routerları (EKLENDİ)
+from app.api.routes_shifts import router as shifts_router
+from app.api.routes_shift_assignments import router as shift_assignments_router
+from app.api.routes_shift_weeks import router as shift_weeks_router
+
+# Scheduler
 from app.scheduler.admin_tasks_jobs import start_scheduler
 
-# V1: hızlı başlat (prod'da Alembic'e geçilecek)
+# tabloları oluştur
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.APP_NAME)
@@ -55,19 +59,16 @@ app.add_middleware(
 
 # ---- Startup migrasyonları ----
 MIGRATIONS_SQL = [
-    # UID kolonlarını BIGINT'e yükselt
     "ALTER TABLE IF EXISTS raw_messages ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
     "ALTER TABLE IF EXISTS events       ALTER COLUMN from_user_id TYPE BIGINT USING from_user_id::bigint;",
 
-    # employees ek alanlar
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS department VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(255);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS phone VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
-    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
+    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
 
-    # telegram_user_id INTEGER ise BIGINT'e çevir
     "DO $$ BEGIN "
     "  IF EXISTS (SELECT 1 FROM information_schema.columns "
     "             WHERE table_name='employees' AND column_name='telegram_user_id' AND data_type='integer') THEN "
@@ -75,12 +76,10 @@ MIGRATIONS_SQL = [
     "  END IF; "
     "END $$;",
 
-    # admin_tasks indeksler
     "CREATE INDEX IF NOT EXISTS idx_admin_tasks_date ON admin_tasks(date);",
     "CREATE INDEX IF NOT EXISTS idx_admin_tasks_status ON admin_tasks(status);",
     "CREATE INDEX IF NOT EXISTS idx_admin_tasks_assignee ON admin_tasks(assignee_employee_id);",
 
-    # admin_settings
     "CREATE TABLE IF NOT EXISTS admin_settings ("
     " key TEXT PRIMARY KEY,"
     " value TEXT NOT NULL,"
@@ -91,7 +90,6 @@ MIGRATIONS_SQL = [
     "INSERT INTO admin_settings(key,value) VALUES ('finance_tg_enabled','0')      ON CONFLICT (key) DO NOTHING;",
     "INSERT INTO admin_settings(key,value) VALUES ('attendance_tg_enabled','0')   ON CONFLICT (key) DO NOTHING;",
 
-    # admin_notifications
     "CREATE TABLE IF NOT EXISTS admin_notifications ("
     " id SERIAL PRIMARY KEY,"
     " channel VARCHAR(32) NOT NULL,"
@@ -111,7 +109,6 @@ MIGRATIONS_SQL = [
     " UNIQUE(channel, type, period_key)"
     ");",
 
-    # shift_definitions
     "CREATE TABLE IF NOT EXISTS shift_definitions ("
     " id SERIAL PRIMARY KEY,"
     " name VARCHAR(64) NOT NULL,"
@@ -119,14 +116,12 @@ MIGRATIONS_SQL = [
     " end_time TIME NOT NULL,"
     " is_active BOOLEAN NOT NULL DEFAULT TRUE"
     ");",
-    # start_time + end_time benzersiz (tek slot = tek id)
     "DO $$ BEGIN "
     "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='uq_shift_def_start_end') THEN "
     "    ALTER TABLE shift_definitions ADD CONSTRAINT uq_shift_def_start_end UNIQUE (start_time, end_time); "
     "  END IF; "
     "END $$;",
 
-    # shift_weeks
     "CREATE TABLE IF NOT EXISTS shift_weeks ("
     " week_start DATE PRIMARY KEY,"
     " status VARCHAR(16) NOT NULL DEFAULT 'draft',"
@@ -134,7 +129,6 @@ MIGRATIONS_SQL = [
     " published_by VARCHAR(64) NULL"
     ");",
 
-    # shift_assignments
     "CREATE TABLE IF NOT EXISTS shift_assignments ("
     " id SERIAL PRIMARY KEY,"
     " week_start DATE NOT NULL,"
@@ -186,4 +180,8 @@ app.include_router(reports_router)
 app.include_router(admin_tasks_router)
 app.include_router(admin_bot_router)
 app.include_router(admin_notify_router)
-app.include_router(shifts_router)   # ⬅️ /shifts + debug uçları
+
+# ⬇️ EKLENENLER
+app.include_router(shifts_router)               # /shifts
+app.include_router(shift_assignments_router)    # /shift-assignments
+app.include_router(shift_weeks_router)          # /shift-weeks
