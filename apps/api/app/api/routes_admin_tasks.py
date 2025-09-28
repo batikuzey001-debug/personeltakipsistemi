@@ -78,6 +78,43 @@ class TaskCreateIn(BaseModel):
     assignee_employee_id: Optional[str] = None
     due_ts: Optional[datetime] = None  # İsterseniz vardiya bitişi verin
 
+# ===== Upsert helper: Görev oluşturulunca şablon yoksa ekle =====
+from sqlalchemy import func  # aşağıda da kullanılıyor
+
+def _ensure_template_upsert(
+    db: Session,
+    *,
+    title: str,
+    shift: Optional[str],
+    department: Optional[str],
+    default_assignee: Optional[str],
+) -> None:
+    """
+    Neden: 'Görev var ama Şablon yok' durumunu kalıcı olarak engellemek.
+    """
+    # _norm_str fonksiyonu dosyada aşağıda tanımlı; çağrı anında çözülür.
+    title_norm = _norm_str(title)
+    shift_val = shift or None
+    dept_val = department or None
+
+    exists_q = db.query(AdminTaskTemplate).filter(
+        func.lower(func.trim(AdminTaskTemplate.title)) == title_norm,
+        (AdminTaskTemplate.shift == shift_val) if shift_val is not None else AdminTaskTemplate.shift.is_(None),
+        (AdminTaskTemplate.department == dept_val) if dept_val is not None else AdminTaskTemplate.department.is_(None),
+    )
+
+    if db.query(exists_q.exists()).scalar():
+        return  # zaten var
+
+    tpl = AdminTaskTemplate(
+        title=" ".join((title or "").split()).strip(),  # görsel temizlik
+        shift=shift_val,
+        department=dept_val,
+        default_assignee=default_assignee or None,
+        is_active=True,
+    )
+    db.add(tpl)  # commit'i çağıran üst akış yapacak
+
 @router.post(
     "",
     response_model=TaskOut,
@@ -86,6 +123,7 @@ class TaskCreateIn(BaseModel):
 def create_task(body: TaskCreateIn, db: Session = Depends(get_db)):
     """
     Yönetici görev atar → görev anında görünür (tarih kavramı UI'da yok; model gerekirse bugünün tarihini alır).
+    Ayrıca: Aynı (title, shift, department) için şablon yoksa otomatik oluşturulur.
     """
     t = AdminTask(
         date=_today_ist(),  # modelde zorunluysa içsel olarak set ediyoruz
@@ -100,6 +138,16 @@ def create_task(body: TaskCreateIn, db: Session = Depends(get_db)):
         done_by=None,
     )
     db.add(t)
+
+    # Şablon upsert
+    _ensure_template_upsert(
+        db,
+        title=body.title.strip(),
+        shift=body.shift,
+        department=body.department,
+        default_assignee=body.assignee_employee_id,
+    )
+
     db.commit()
     db.refresh(t)
     return _to_task_out(t)
@@ -338,7 +386,7 @@ def assign_from_template(tpl_id: int, body: AssignFromTemplateIn, db: Session = 
     return _to_task_out(t)
 
 # ---- EK: Görevlerden şablon üret (normalize'lı) ----
-from sqlalchemy import func
+from sqlalchemy import func  # tekrar import güvenli ama isterseniz kaldırabilirsiniz
 
 def _norm_title_expr(col):
     # lower(trim(regexp_replace(title, '\s+', ' ')))
