@@ -22,7 +22,6 @@ IST = timezone("Europe/Istanbul")
 # --- DEV NO AUTH SWITCH ---
 NO_AUTH = True
 def auth_deps(*roles: str):
-    # Neden: İskelette 401 sorununu by-pass etmek.
     return [] if NO_AUTH else [Depends(RolesAllowed(*roles))]
 
 # ---------------- Common helpers ----------------
@@ -72,16 +71,18 @@ def list_tasks(
     db: Session = Depends(get_db),
 ):
     """
-    Sadece şablondan türeyen bugünkü görevler.
+    Sadece şablonla eşleşen bugünkü görevleri döndür.
+    Not: is_active filtresi YOK. Şablon sonradan pasif olsa bile görev görünür.
     """
     target_date = date_ or _today_ist()
 
+    # Şablon eşleşmesi (normalize başlık + vardiya + departman)
     tpl_exists = exists().where(
         and_(
             _norm_title_expr(AdminTaskTemplate.title) == _norm_title_expr(AdminTask.title),
             (AdminTaskTemplate.shift == AdminTask.shift) if shift is None else (AdminTaskTemplate.shift == shift),
             (AdminTaskTemplate.department == AdminTask.department) if dept is None else (AdminTaskTemplate.department == dept),
-            AdminTaskTemplate.is_active.is_(True),
+            # AdminTaskTemplate.is_active filtresi kaldırıldı
         )
     )
 
@@ -309,10 +310,10 @@ def delete_template(tpl_id: int, db: Session = Depends(get_db)):
 
 # ===== ŞABLONDAN TEK TIKLA GÖREV ATAMA =====
 class AssignFromTemplateIn(BaseModel):
-    assignee_employee_id: Optional[str] = None
-    shift: Optional[str] = None
-    department: Optional[str] = None
-    due_ts: Optional[datetime] = None
+  assignee_employee_id: Optional[str] = None
+  shift: Optional[str] = None
+  department: Optional[str] = None
+  due_ts: Optional[datetime] = None
 
 @router.post(
     "/templates/{tpl_id}/assign",
@@ -323,8 +324,6 @@ def assign_from_template(tpl_id: int, body: AssignFromTemplateIn, db: Session = 
     tpl: AdminTaskTemplate | None = db.get(AdminTaskTemplate, tpl_id) if hasattr(db, "get") else db.query(AdminTaskTemplate).get(tpl_id)
     if not tpl:
         raise HTTPException(status_code=404, detail="template not found")
-    if not tpl.is_active:
-        raise HTTPException(status_code=400, detail="template is not active")
 
     t = AdminTask(
         date=_today_ist(),
@@ -404,85 +403,3 @@ def materialize_tasks_for_day(
 
     db.commit()
     return MaterializeOut(created=created, skipped=skipped)
-
-# ---- Opsiyonel: Görevlerden şablon üret (kalabilir) ----
-class BackfillResult(BaseModel):
-    created: int
-    skipped: int
-    preview: Optional[List[TemplateOut]] = None
-
-@router.post(
-    "/templates/backfill-from-tasks",
-    response_model=BackfillResult,
-    dependencies=auth_deps("super_admin","admin"),
-)
-def backfill_templates_from_tasks(
-    include_done: bool = Query(False, description="True → tamamlanmış görevlerden de üret"),
-    shift: Optional[str] = Query(None, description="Sadece bu vardiya (örn: Sabah)"),
-    dept: Optional[str] = Query(None, description="Sadece bu departman (örn: Admin)"),
-    dry_run: bool = Query(False, description="True → sadece önizleme"),
-    db: Session = Depends(get_db),
-):
-    q = db.query(
-        _norm_title_expr(AdminTask.title).label("title_norm"),
-        AdminTask.title.label("title_raw"),
-        AdminTask.shift.label("shift"),
-        AdminTask.department.label("department"),
-    )
-    if not include_done:
-        q = q.filter(AdminTask.is_done == False)
-    if shift:
-        q = q.filter(AdminTask.shift == shift)
-    if dept:
-        q = q.filter(AdminTask.department == dept)
-
-    combos = q.group_by(
-        _norm_title_expr(AdminTask.title),
-        AdminTask.title,
-        AdminTask.shift,
-        AdminTask.department
-    ).all()
-
-    created = 0
-    skipped = 0
-    preview_items: List[AdminTaskTemplate] = []
-
-    for row in combos:
-        title_norm = _norm_str(row.title_raw)
-        shift_val = row.shift or None
-        dept_val = row.department or None
-
-        if not title_norm:
-            skipped += 1
-            continue
-
-        exists_q = db.query(AdminTaskTemplate).filter(
-            func.lower(func.trim(AdminTaskTemplate.title)) == title_norm,
-            (AdminTaskTemplate.shift == shift_val) if shift_val is not None else AdminTaskTemplate.shift.is_(None),
-            (AdminTaskTemplate.department == dept_val) if dept_val is not None else AdminTaskTemplate.department.is_(None),
-        )
-        if db.query(exists_q.exists()).scalar():
-            skipped += 1
-            continue
-
-        t = AdminTaskTemplate(
-            title=" ".join((row.title_raw or "").split()).strip(),
-            shift=shift_val,
-            department=dept_val,
-            default_assignee=None,
-            is_active=True,
-        )
-        if dry_run:
-            preview_items.append(t)
-        else:
-            db.add(t)
-            created += 1
-
-    if not dry_run:
-        db.commit()
-
-    return BackfillResult(
-        created=created,
-        skipped=skipped,
-        preview=[TemplateOut.model_validate(x, from_attributes=True) for x in preview_items] if dry_run else None
-    )
