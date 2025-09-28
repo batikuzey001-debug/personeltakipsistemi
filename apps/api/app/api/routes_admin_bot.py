@@ -6,8 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from pytz import timezone
-from app.services.admin_settings_service import get_bool, BONUS_TG_ENABLED_KEY, ADMIN_TASKS_TG_ENABLED_KEY, ATTENDANCE_TG_ENABLED_KEY, FINANCE_TG_ENABLED_KEY
-
 
 from app.deps import get_db
 from app.services.admin_settings_service import (
@@ -23,12 +21,11 @@ from app.services.bonus_metrics_service import (
     compute_bonus_periodic_context,
 )
 from app.services.template_engine import render
-from app.services.telegram_notify import send_text
+# 🔁 Bonus raporlarını hem genel gruba hem bonus grubuna yollamak için:
+from app.services.telegram_notify import send_bonus_to_both
 
-# IST TZ
 IST = timezone("Europe/Istanbul")
 
-# Router (prefix sabit /admin-bot)
 router = APIRouter(prefix="/admin-bot", tags=["admin_bot"])
 
 
@@ -59,18 +56,8 @@ def read_settings(db: Session = Depends(get_db)):
         admin_tasks_tg_enabled=get_bool(db, ADMIN_TASKS_TG_ENABLED_KEY, False),
         bonus_tg_enabled=get_bool(db, BONUS_TG_ENABLED_KEY, False),
         finance_tg_enabled=get_bool(db, FINANCE_TG_ENABLED_KEY, False),
-        attendance_tg_enabled=get_bool(db, ATTENDANCE_TG_ENABLED_KEY, False),   
+        attendance_tg_enabled=get_bool(db, ATTENDANCE_TG_ENABLED_KEY, False),
     )
-@router.get("/status")
-def status(db: Session = Depends(get_db)):
-    """Bildirim anahtarlarının anlık (DB) durumunu döner."""
-    return {
-        "admin_tasks": bool(get_bool(db, ADMIN_TASKS_TG_ENABLED_KEY, False)),
-        "bonus": bool(get_bool(db, BONUS_TG_ENABLED_KEY, False)),
-        "attendance": bool(get_bool(db, ATTENDANCE_TG_ENABLED_KEY, False)),
-        "finance": bool(get_bool(db, FINANCE_TG_ENABLED_KEY, False)),
-    }
-    
 
 
 @router.put("/settings", response_model=BotSettingsOut)
@@ -86,14 +73,26 @@ def update_settings(body: BotSettingsIn, db: Session = Depends(get_db)):
     return read_settings(db)
 
 
+@router.get("/status")
+def status(db: Session = Depends(get_db)):
+    """Bildirim anahtarlarının anlık (DB) durumunu döner."""
+    return {
+        "admin_tasks": bool(get_bool(db, ADMIN_TASKS_TG_ENABLED_KEY, False)),
+        "bonus": bool(get_bool(db, BONUS_TG_ENABLED_KEY, False)),
+        "attendance": bool(get_bool(db, ATTENDANCE_TG_ENABLED_KEY, False)),
+        "finance": bool(get_bool(db, FINANCE_TG_ENABLED_KEY, False)),
+    }
+
+
 # ---------------- Dahili yardımcılar ----------------
 def _must_bonus_enabled(db: Session):
     if not get_bool(db, BONUS_TG_ENABLED_KEY, False):
         raise HTTPException(status_code=400, detail="bonus notifications disabled")
 
 
-def _send_text_or_400(message: str):
-    if not send_text(message):
+def _send_bonus_or_400(message: str):
+    # 📤 Hem genel gruba hem BONUS_TG_CHAT_ID'ye gönder (env’de varsa)
+    if not send_bonus_to_both(message):
         raise HTTPException(status_code=400, detail="send failed")
 
 
@@ -106,7 +105,6 @@ def trigger_bonus_daily(
 ):
     _must_bonus_enabled(db)
 
-    # Hedef gün (IST)
     now_ist = datetime.now(IST)
     if d:
         try:
@@ -117,10 +115,8 @@ def trigger_bonus_daily(
     else:
         target = (now_ist - timedelta(days=1)).date()
 
-    # Metrikler
     ctx = compute_bonus_daily_context(db, target, sla_first_sec=sla_first_sec)
 
-    # Metin blokları
     slow_text = "\n".join(
         [f"- {i.get('full_name','-')} — {int(i.get('gt60_cnt') or 0)} işlem" for i in ctx["slow_list"]]
     ) or "- —"
@@ -133,7 +129,6 @@ def trigger_bonus_daily(
         ]
     ) or "- —"
 
-    # Render context
     message_ctx = {
         "date": ctx["date_label"],
         "total_close": ctx["total_close"],
@@ -143,7 +138,6 @@ def trigger_bonus_daily(
         "per_emp_text": per_emp_text,
     }
 
-    # Çizgisiz & bold fallback
     fallback = (
         "📊 *BONUS GÜN SONU RAPORU — {date}*\n"
         "- *Toplam Kapanış:* {total_close}\n"
@@ -156,7 +150,7 @@ def trigger_bonus_daily(
     )
 
     text_msg = render(db, "bonus_daily_v2", message_ctx, fallback, channel="bonus")
-    _send_text_or_400(text_msg)
+    _send_bonus_or_400(text_msg)
     return {"ok": True, "date": ctx["date_label"]}
 
 
@@ -169,7 +163,6 @@ def trigger_bonus_periodic(
 ):
     _must_bonus_enabled(db)
 
-    # Pencere bitişi (IST)
     if end:
         try:
             end_ist = IST.localize(datetime.strptime(end, "%Y-%m-%dT%H:%M"))
@@ -178,22 +171,18 @@ def trigger_bonus_periodic(
     else:
         end_ist = datetime.now(IST)
 
-    # Metrikler: 2 saatlik özet + kişi bazlı toplamlar + 30 sn üzeri listesi
     ctx = compute_bonus_periodic_context(db, end_ist, hours=2, kt30_sec=kt30_sec)
 
-    # Personel bazında toplam işlem sayıları (bold sayılar)
     per_emp_text = "\n".join(
         [f"- {i.get('full_name','-')} — *{int(i.get('close_cnt') or 0)}* işlem" for i in ctx.get("per_emp", [])]
     ) or "- —"
 
-    # 30 sn üzeri İlk KT uyarı bloğu (varsa)
     slow30_list = ctx.get("slow_30", [])
     slow30_text = "\n".join(
         [f"- {i.get('full_name','-')} — *{int(i.get('gt30_cnt') or 0)}* işlem" for i in slow30_list]
     )
     slow30_block = f"\n\n⚠️ *{kt30_sec} sn üzeri İlk KT*\n{slow30_text}" if slow30_text else ""
 
-    # Render context
     message_ctx = {
         "date": ctx["date_label"],
         "win_start": ctx["win_start"],
@@ -203,7 +192,6 @@ def trigger_bonus_periodic(
         "slow30_block": slow30_block,
     }
 
-    # Çizgisiz & bold fallback (2 saatlik)
     fallback = (
         "⏱️ *BONUS 2 SAATLİK RAPOR* — *{date} {win_start}–{win_end}*\n\n"
         "• *Toplam Kapanış:* {total_close}\n\n"
@@ -213,5 +201,5 @@ def trigger_bonus_periodic(
     )
 
     text_msg = render(db, "bonus_periodic_v2", message_ctx, fallback, channel="bonus")
-    _send_text_or_400(text_msg)
+    _send_bonus_or_400(text_msg)
     return {"ok": True, "window": f"{ctx['win_start']}-{ctx['win_end']}", "date": ctx["date_label"]}
