@@ -4,10 +4,10 @@ import React, { useEffect, useMemo, useState } from "react";
 const API = (import.meta.env.VITE_API_BASE_URL as string) || "";
 
 type Employee = { id: string; full_name: string; department?: string | null };
-type Assign = { id?: number; employee_id: string; date: string; week_start: string; shift_def_id: number | null; status: "ON" | "OFF"; };
+type Assign = { employee_id: string; date: string; week_start: string; shift_def_id: number | null; status: "ON" | "OFF" };
 type WeekStatus = "draft" | "published";
 type ShiftWeek = { week_start: string; status: WeekStatus; published_at?: string | null; published_by?: string | null };
-type Slot = { id: number; name: string; start: string; end: string };
+type ShiftDef = { id: number; start_time: string; end_time: string };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem("token") || "";
@@ -23,34 +23,34 @@ function mondayOf(d: Date): Date { const x = new Date(d.getFullYear(), d.getMont
 function addDays(d: Date, n: number): Date { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function pad2(n: number) { return n.toString().padStart(2, "0"); }
 
-/* 24 adet 8 saatlik slot (00-08 … 23-07) */
-function genSlots(): Slot[] {
-  const out: Slot[] = [];
-  for (let h = 0; h < 24; h++) {
-    const start = `${pad2(h)}:00`;
-    const end = `${pad2((h + 8) % 24)}:00`;
-    out.push({ id: h + 1, name: `${start}-${end}`, start, end });
-  }
-  return out;
-}
-const DEFAULT_SLOTS = genSlots();
+/* 24 adet 8 saatlik slot anahtarı */
+const SLOTS = Array.from({ length: 24 }, (_, h) => {
+  const start = `${pad2(h)}:00`;
+  const end = `${pad2((h + 8) % 24)}:00`;
+  return { key: `${start}-${end}`, start, end };
+});
 
 export default function ShiftPlanner() {
   const [monday, setMonday] = useState<Date>(() => mondayOf(new Date()));
   const weekStartISO = toISODate(monday);
   const weekEnd = addDays(monday, 6);
   const weekTitle = `${fmtTR.format(monday)}  ➜  ${fmtTR.format(weekEnd)}`;
-
-  const dayLabels = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cts", "Paz"];
-  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => ({ label: dayLabels[i], iso: toISODate(addDays(monday, i)) })), [monday]);
+  const days = useMemo(() => {
+    const labels = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cts", "Paz"];
+    return Array.from({ length: 7 }, (_, i) => ({ label: labels[i], iso: toISODate(addDays(monday, i)) }));
+  }, [monday]);
 
   const [emps, setEmps] = useState<Employee[]>([]);
-  const [assigns, setAssigns] = useState<Record<string, Record<string, Assign>>>({});
   const [week, setWeek] = useState<ShiftWeek | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>("");
+
+  // HÜCRE STATE: selections[empId][dateISO] = "OFF" veya "HH:MM-HH:MM"
+  const [selections, setSelections] = useState<Record<string, Record<string, string>>>({});
+
+  // backend id eşlemesi (id<->key)
+  const [idByKey, setIdByKey] = useState<Record<string, number>>({});
+  const [keyById, setKeyById] = useState<Record<number, string>>({});
 
   const byDept = useMemo(() => {
     const map: Record<string, Employee[]> = {};
@@ -66,105 +66,110 @@ export default function ShiftPlanner() {
     setOpenDept(init);
   }, [byDept.length]);
 
-  /* /shifts ile senkron: UI slotlarını backend'e yaratır, id eşlemesi döner */
-  async function ensureBackendShifts(): Promise<Record<string, number>> {
-    const map: Record<string, number> = {};
-    let existing: { id: number; start_time: string; end_time: string }[] = [];
-    try { existing = await api(`/shifts`); } catch { existing = []; }
-    for (const s of existing) map[`${(s.start_time || "").slice(0,5)}-${(s.end_time || "").slice(0,5)}`] = s.id;
-    for (const slot of DEFAULT_SLOTS) {
-      const key = slot.name;
-      if (map[key]) continue;
+  async function ensureBackendShifts(): Promise<{ idByKey: Record<string, number>; keyById: Record<number, string> }> {
+    // /shifts mevcutları çek; eksik olan 24 slotu oluştur
+    const idMap: Record<string, number> = {};
+    const keyMap: Record<number, string> = {};
+    let existing: ShiftDef[] = [];
+    try { existing = await api<ShiftDef[]>(`/shifts`); } catch { existing = []; }
+    for (const s of existing) {
+      const key = `${s.start_time.slice(0,5)}-${s.end_time.slice(0,5)}`;
+      idMap[key] = (s as any).id;
+      keyMap[(s as any).id] = key;
+    }
+    for (const sl of SLOTS) {
+      if (idMap[sl.key]) continue;
       try {
-        const res = await api<{ id: number }>(`/shifts`, { method: "POST", body: JSON.stringify({ name: key, start_time: slot.start, end_time: slot.end, is_active: true }) });
-        map[key] = (res as any).id;
+        const r = await api<ShiftDef>(`/shifts`, { method: "POST", body: JSON.stringify({ name: sl.key, start_time: sl.start, end_time: sl.end, is_active: true }) });
+        const id = (r as any).id;
+        idMap[sl.key] = id;
+        keyMap[id] = sl.key;
       } catch {}
     }
+    // kesin eşleşme için tekrar çek
     try {
-      existing = await api(`/shifts`);
-      for (const s of existing) map[`${(s.start_time || "").slice(0,5)}-${(s.end_time || "").slice(0,5)}`] = s.id;
+      existing = await api<ShiftDef[]>(`/shifts`);
+      for (const s of existing) {
+        const key = `${s.start_time.slice(0,5)}-${s.end_time.slice(0,5)}`;
+        idMap[key] = (s as any).id;
+        keyMap[(s as any).id] = key;
+      }
     } catch {}
-    return map;
+    return { idByKey: idMap, keyById: keyMap };
   }
 
   async function load() {
-    setLoading(true); setErr(null);
+    setErr(null);
     try {
-      const [e, w, a] = await Promise.all([
+      const [e, w, a, maps] = await Promise.all([
         api<Employee[]>(`/employees`),
         api<ShiftWeek>(`/shift-weeks/${weekStartISO}`),
         api<Assign[]>(`/shift-assignments?week_start=${weekStartISO}`),
+        ensureBackendShifts(),
       ]);
       setEmps(e);
       setWeek(w);
+      setIdByKey(maps.idByKey);
+      setKeyById(maps.keyById);
 
-      // Her hücre için bağımsız obje kur
-      const map: Record<string, Record<string, Assign>> = {};
+      // varsayılan OFF
+      const sel: Record<string, Record<string, string>> = {};
       for (const emp of e) {
-        map[emp.id] = {};
-        for (const d of days) {
-          map[emp.id][d.iso] = {
-            employee_id: emp.id,
-            date: d.iso,
-            week_start: weekStartISO,
-            shift_def_id: null,
-            status: "OFF",
-          };
-        }
+        sel[emp.id] = {};
+        for (const d of days) sel[emp.id][d.iso] = "OFF";
       }
+      // mevcut atamaları doldur
       for (const row of a) {
-        map[row.employee_id][row.date] = { ...row }; // spesifik hücreye yaz
+        const key = row.shift_def_id ? maps.keyById[row.shift_def_id] : "OFF";
+        sel[row.employee_id][row.date] = key || "OFF";
       }
-      setAssigns(map);
+      setSelections(sel);
     } catch (e: any) {
       setErr(e?.message || "Veriler alınamadı");
-    } finally { setLoading(false); }
+    }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [weekStartISO]);
 
-  function setCell(empId: string, dayISO: string, val: string) {
-    setAssigns((prev) => {
-      const copy = { ...prev };
-      const row = { ...(copy[empId] || {}) };
-      const cur: Assign = { ...(row[dayISO] || { employee_id: empId, date: dayISO, week_start: weekStartISO, shift_def_id: null, status: "OFF" }) };
-      if (val === "OFF") { cur.shift_def_id = null; cur.status = "OFF"; }
-      else { cur.shift_def_id = Number(val); cur.status = "ON"; }
-      row[dayISO] = cur;
-      copy[empId] = row;
-      return copy;
-    });
+  // Hücre set — SADECE tek hücre değişir
+  function setCell(empId: string, dateISO: string, newVal: string) {
+    setSelections((prev) => ({
+      ...prev,
+      [empId]: { ...(prev[empId] || {}), [dateISO]: newVal },
+    }));
   }
 
   async function save() {
-    setSaving(true); setErr(null);
     try {
-      const idMap = await ensureBackendShifts();
       const payload: Assign[] = [];
-      for (const empId of Object.keys(assigns)) {
+      for (const [empId, row] of Object.entries(selections)) {
         for (const d of days) {
-          const c = assigns[empId][d.iso];
-          const key = DEFAULT_SLOTS.find(s => Number(c?.shift_def_id) === s.id)?.name;
-          const backendId = key ? idMap[key] : null;
+          const key = row[d.iso] || "OFF";
           payload.push({
             employee_id: empId,
             date: d.iso,
             week_start: weekStartISO,
-            shift_def_id: backendId ?? null,
-            status: c?.status ?? "OFF",
+            shift_def_id: key === "OFF" ? null : (idByKey[key] ?? null),
+            status: key === "OFF" ? "OFF" : "ON",
           });
         }
       }
-      await api<Assign[]>(`/shift-assignments/bulk`, { method: "POST", body: JSON.stringify(payload) });
+      await api(`/shift-assignments/bulk`, { method: "POST", body: JSON.stringify(payload) });
       setMsg("Kaydedildi"); setTimeout(() => setMsg(""), 1200);
       await load();
-    } catch (e: any) { setErr(e?.message || "Kaydetme hatası"); setTimeout(() => setErr(null), 1800); }
-    finally { setSaving(false); }
+    } catch (e: any) {
+      setErr(e?.message || "Kaydetme hatası"); setTimeout(() => setErr(null), 1800);
+    }
   }
 
   async function publish() {
     if (!confirm("Bu haftayı yayınla ve kilitle?")) return;
-    try { const w = await api<ShiftWeek>(`/shift-weeks/${weekStartISO}/publish`, { method: "POST" }); setWeek(w); setMsg("Hafta yayınlandı"); setTimeout(() => setMsg(""), 1200); }
-    catch (e: any) { setErr(e?.message || "Publish hatası"); setTimeout(() => setErr(null), 1800); }
+    try {
+      const w = await api<ShiftWeek>(`/shift-weeks/${weekStartISO}/publish`, { method: "POST" });
+      setWeek(w);
+      setMsg("Hafta yayınlandı"); setTimeout(() => setMsg(""), 1200);
+    } catch (e: any) {
+      setErr(e?.message || "Publish hatası"); setTimeout(() => setErr(null), 1800);
+    }
   }
 
   const isDraft = week?.status !== "published";
@@ -186,8 +191,8 @@ export default function ShiftPlanner() {
           <span style={badge}>{isDraft ? "DRAFT" : "PUBLISHED"}</span>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={load} disabled={loading}>{loading ? "Yükleniyor…" : "Yenile"}</button>
-          <button onClick={save} disabled={!isDraft || saving || loading}>{saving ? "Kaydediliyor…" : "Kaydet"}</button>
+          <button onClick={() => load()}>Yenile</button>
+          <button onClick={save} disabled={!isDraft}>Kaydet</button>
           <button onClick={publish} disabled={!isDraft}>Publish</button>
         </div>
       </div>
@@ -225,22 +230,19 @@ export default function ShiftPlanner() {
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(140px,1fr))" }}>
                     {days.map((d) => {
-                      const cell = assigns[emp.id]?.[d.iso];
-                      // Her hücre kendi değeri: yoksa kesin "OFF"
-                      const value = (cell && cell.status === "ON" && cell.shift_def_id != null) ? String(cell.shift_def_id) : "OFF";
+                      const value = selections[emp.id]?.[d.iso] ?? "OFF"; // ← her hücre kendi değeri
                       return (
                         <div key={`${emp.id}-${d.iso}`} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
                           <select
-                            key={`${emp.id}-${d.iso}-${value}`} // benzersiz anahtar → DOM paylaşımı engellenir
                             value={value}
                             onChange={(e) => setCell(emp.id, d.iso, e.target.value)}
-                            disabled={week?.status === "published"}
+                            disabled={!isDraft}
                             autoComplete="off"
                             style={{ width: "100%" }}
                           >
                             <option value="OFF">OFF</option>
-                            {DEFAULT_SLOTS.map((s) => (
-                              <option key={s.id} value={s.id}>{s.name}</option>
+                            {SLOTS.map((s) => (
+                              <option key={s.key} value={s.key}>{s.key}</option>
                             ))}
                           </select>
                         </div>
