@@ -5,9 +5,9 @@ const API = (import.meta.env.VITE_API_BASE_URL as string) || "";
 
 /* Types */
 type Employee = {
-  pk?: number;                 // olabilir, yoksa fallback
-  id?: string;                 // bazı API'lerde var
-  employee_id: string;         // iş kodu (RD-xxx)
+  pk?: number;            // varsa benzersiz
+  id?: string;            // bazı API'lerde string id
+  employee_id: string;    // iş kodu (örn. RD-021)
   full_name: string;
   department?: string | null;
 };
@@ -16,6 +16,7 @@ type WeekStatus = "draft" | "published";
 type ShiftWeek = { week_start: string; status: WeekStatus; published_at?: string | null; published_by?: string | null };
 type ShiftDef = { id: number; start_time: string; end_time: string; is_active?: boolean };
 
+/* API helper */
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem("token") || "";
   const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...init });
@@ -23,7 +24,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json() as Promise<T>;
 }
 
-/* Dates */
+/* Date helpers */
 const fmtTR = new Intl.DateTimeFormat("tr-TR", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Europe/Istanbul" });
 function toISODate(d: Date): string { const z = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); return z.toISOString().slice(0, 10); }
 function mondayOf(d: Date): Date { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); const day = x.getDay(); const diff = (day === 0 ? -6 : 1) - day; x.setDate(x.getDate() + diff); return x; }
@@ -33,11 +34,11 @@ function pad2(n: number) { return n.toString().padStart(2, "0"); }
 /* 24×8 saat slot */
 const SLOT_KEYS = Array.from({ length: 24 }, (_, h) => `${pad2(h)}:00-${pad2((h + 8) % 24)}:00`);
 
-/* Benzersiz satır anahtarı */
-const rowKeyOf = (e: Employee) => String(e.pk ?? e.id ?? e.employee_id);
+/* Satır benzersiz anahtarı: pk -> id -> employee_id sırası ile */
+const rowKeyOf = (e: Employee) => String(e.pk ?? e.id ?? e.employee_id ?? "");
 
-/* Component */
 export default function ShiftPlanner() {
+  // Hafta
   const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const weekStartISO = toISODate(monday);
   const weekEnd = addDays(monday, 6);
@@ -47,21 +48,29 @@ export default function ShiftPlanner() {
     return Array.from({ length: 7 }, (_, i) => ({ label: labels[i], iso: toISODate(addDays(monday, i)) }));
   }, [monday]);
 
+  // Veriler
   const [emps, setEmps] = useState<Employee[]>([]);
   const [week, setWeek] = useState<ShiftWeek | null>(null);
-  const [defs, setDefs] = useState<Record<string, number>>({});
+  const [defs, setDefs] = useState<Record<string, number>>({}); // "HH:MM-HH:MM" -> shift_def_id
+
+  // Hücre sözlüğü: "ROWKEY|YYYY-MM-DD" -> "OFF" veya "HH:MM-HH:MM"
   const [cells, setCells] = useState<Record<string, string>>({});
+
+  // UI
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>("");
 
+  // Departmana göre grupla
   const byDept = useMemo(() => {
     const map: Record<string, Employee[]> = {};
     for (const e of emps) (map[e.department || "—"] ||= []).push(e);
     for (const k of Object.keys(map)) map[k].sort((a, b) => (a.full_name || a.employee_id).localeCompare(b.full_name || b.employee_id, "tr"));
     return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], "tr"));
   }, [emps]);
+
+  // Aç/Kapa
   const [openDept, setOpenDept] = useState<Record<string, boolean>>({});
   useEffect(() => {
     const o: Record<string, boolean> = {};
@@ -69,11 +78,13 @@ export default function ShiftPlanner() {
     setOpenDept(o);
   }, [byDept.length]);
 
+  // /shifts -> id map
   async function ensureDefs(): Promise<Record<string, number>> {
     const map: Record<string, number> = {};
     let existing: ShiftDef[] = [];
     try { existing = await api<ShiftDef[]>("/shifts"); } catch { existing = []; }
     for (const s of existing) map[`${s.start_time.slice(0,5)}-${s.end_time.slice(0,5)}`] = (s as any).id;
+    // idempotent seed
     for (const key of SLOT_KEYS) {
       if (map[key]) continue;
       const [start_time, end_time] = key.split("-");
@@ -86,6 +97,7 @@ export default function ShiftPlanner() {
     return map;
   }
 
+  // Yükleme
   async function load() {
     setLoading(true); setErr(null);
     try {
@@ -99,11 +111,13 @@ export default function ShiftPlanner() {
       setWeek(w);
       setDefs(map);
 
+      // Hücreleri OFF ile doldur
       const dict: Record<string, string> = {};
       for (const emp of e) {
         const rk = rowKeyOf(emp);
         for (const d of days) dict[`${rk}|${d.iso}`] = "OFF";
       }
+      // Atamaları uygula
       for (const row of a) {
         const emp = e.find(x => x.employee_id === row.employee_id);
         if (!emp) continue;
@@ -112,27 +126,44 @@ export default function ShiftPlanner() {
         dict[`${rk}|${row.date}`] = row.status === "ON" && uiKey ? uiKey : "OFF";
       }
       setCells(dict);
+
+      // ---- DEBUG: benzersiz satır anahtarı ve employee_id tekrarları ----
+      const rowKeys = e.map(rowKeyOf);
+      const dupRowKeys = [...new Set(rowKeys)].filter(k => rowKeys.filter(x => x === k).length > 1);
+      const empIds = e.map(x => x.employee_id);
+      const dupEmpIds = [...new Set(empIds)].filter(k => empIds.filter(x => x === k).length > 1);
+      if (dupRowKeys.length || dupEmpIds.length) {
+        console.warn("[ShiftPlanner][DUP] rowKey dup:", dupRowKeys, " employee_id dup:", dupEmpIds);
+        setErr(`Anahtar çakışması: rowKey duplike=${dupRowKeys.join(", ") || "-"} • employee_id duplike=${dupEmpIds.join(", ") || "-"}`);
+      } else {
+        console.log("[ShiftPlanner] rowKey OK. örnek:", rowKeys.slice(0, 5));
+      }
+      // ---- /DEBUG ----
     } catch (x: any) {
       setErr(x?.message || "Veriler alınamadı");
     } finally { setLoading(false); }
   }
   useEffect(() => { load(); /* eslint-disable-line */ }, [weekStartISO]);
 
+  // Tek hücre güncelle
   function setCell(emp: Employee, iso: string, value: string) {
-    const k = `${rowKeyOf(emp)}|${iso}`;
+    const rk = rowKeyOf(emp);
+    const k = `${rk}|${iso}`;
+    console.log("[CellChange]", { rk, iso, value, prev: cells[k] }); // DEBUG
     setCells(prev => (prev[k] === value ? prev : { ...prev, [k]: value }));
   }
 
+  // Kaydet
   async function save() {
     setSaving(true); setErr(null);
     try {
       const payload: Assign[] = [];
       for (const emp of emps) {
-        const rk = rowKeyOf(emp);
+        const rk = rowKeyOf(emp); // sadece debug için
         for (const d of days) {
           const v = cells[`${rk}|${d.iso}`] || "OFF";
           payload.push({
-            employee_id: emp.employee_id,                       // iş kodu
+            employee_id: emp.employee_id,
             date: d.iso,
             week_start: weekStartISO,
             shift_def_id: v === "OFF" ? null : (defs[v] ?? null),
@@ -140,6 +171,7 @@ export default function ShiftPlanner() {
           });
         }
       }
+      console.log("[BulkPayloadSample]", payload.slice(0, 5)); // DEBUG
       await api("/shift-assignments/bulk", { method: "POST", body: JSON.stringify(payload) });
       setMsg("Kaydedildi"); setTimeout(() => setMsg(""), 1200);
       await load();
@@ -156,12 +188,30 @@ export default function ShiftPlanner() {
 
   const isDraft = week?.status !== "published";
 
+  // UI
   const page: React.CSSProperties = { maxWidth: 1280, margin: "0 auto", padding: 16, display: "grid", gap: 12 };
   const card: React.CSSProperties = { border: "1px solid #eef0f4", borderRadius: 12, background: "#fff", boxShadow: "0 6px 24px rgba(16,24,40,0.04)" };
   const badge: React.CSSProperties = { padding: "2px 8px", borderRadius: 999, fontWeight: 800, fontSize: 12, background: isDraft ? "#fff7ed" : "#ecfdf5", border: `1px solid ${isDraft ? "#fdba74" : "#a7f3d0"}`, color: isDraft ? "#9a3412" : "#065f46" };
+  const mini: React.CSSProperties = { fontSize: 10, color: "#6b7280", marginTop: 2 };
+
+  // Debug üst bandı
+  const duplicateInfo = useMemo(() => {
+    const rowKeys = emps.map(rowKeyOf);
+    const dupRowKeys = [...new Set(rowKeys)].filter(k => rowKeys.filter(x => x === k).length > 1);
+    const empIds = emps.map(x => x.employee_id);
+    const dupEmpIds = [...new Set(empIds)].filter(k => empIds.filter(x => x === k).length > 1);
+    return { dupRowKeys, dupEmpIds };
+  }, [emps]);
 
   return (
     <div style={page}>
+      {(duplicateInfo.dupRowKeys.length > 0 || duplicateInfo.dupEmpIds.length > 0) && (
+        <div style={{ padding: 10, border: "1px solid #fecaca", background: "#fee2e2", borderRadius: 10, color: "#7f1d1d" }}>
+          <strong>Anahtar çakışması tespit edildi.</strong><br />
+          rowKey dup: {duplicateInfo.dupRowKeys.join(", ") || "-"} • employee_id dup: {duplicateInfo.dupEmpIds.join(", ") || "-"}
+        </div>
+      )}
+
       <div style={{ ...card, padding: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button onClick={() => setMonday(addDays(monday, -7))}>◀ Önceki</button>
@@ -182,7 +232,7 @@ export default function ShiftPlanner() {
       <div style={{ ...card, overflow: "hidden" }}>
         <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #eef1f4", background: "#f9fafb" }}>
           <div style={{ padding: 10, fontWeight: 800 }}>Departman / Personel</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(140px,1fr))" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(160px,1fr))" }}>
             {days.map((d) => (
               <div key={d.iso} style={{ padding: 10, fontWeight: 800, borderLeft: "1px solid #eef1f4" }}>
                 {d.label}
@@ -212,26 +262,26 @@ export default function ShiftPlanner() {
                       <div style={{ fontWeight: 700 }}>{emp.full_name || emp.employee_id}</div>
                       <div style={{ fontSize: 12, color: "#6b7280" }}>{emp.employee_id}</div>
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(140px,1fr))" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(160px,1fr))" }}>
                       {days.map((d) => {
-                        const key = `${rk}|${d.iso}`;
-                        const value = cells[key] ?? "OFF";
+                        const k = `${rk}|${d.iso}`;
+                        const value = cells[k] ?? "OFF";
                         return (
-                          <div key={key} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
+                          <div key={k} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
                             <select
-                              key={`sel-${key}-${value}`}
-                              id={`sel-${key}`} name={`sel-${key}`}
-                              autoComplete="off"
+                              key={`sel-${k}-${value}`}
+                              id={`sel-${k}`} name={`sel-${k}`} autoComplete="off"
                               value={value}
                               onChange={(e) => setCell(emp, d.iso, e.target.value)}
                               disabled={!isDraft}
                               style={{ width: "100%" }}
                             >
                               <option value="OFF">OFF</option>
-                              {SLOT_KEYS.map((k) => (
-                                <option key={`opt-${key}-${k}`} value={k}>{k}</option>
+                              {SLOT_KEYS.map((sk) => (
+                                <option key={`opt-${k}-${sk}`} value={sk}>{sk}</option>
                               ))}
                             </select>
+                            <div style={mini}>{k}</div> {/* DEBUG: hücre anahtarı görünür */}
                           </div>
                         );
                       })}
