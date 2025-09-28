@@ -7,7 +7,6 @@ type Employee = { id: string; full_name: string; department?: string | null };
 type Assign = { id?: number; employee_id: string; date: string; week_start: string; shift_def_id: number | null; status: "ON" | "OFF"; };
 type WeekStatus = "draft" | "published";
 type ShiftWeek = { week_start: string; status: WeekStatus; published_at?: string | null; published_by?: string | null };
-// Slot tipi sadece UI için
 type Slot = { id: number; name: string; start: string; end: string };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -24,7 +23,7 @@ function mondayOf(d: Date): Date { const x = new Date(d.getFullYear(), d.getMont
 function addDays(d: Date, n: number): Date { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function pad2(n: number) { return n.toString().padStart(2, "0"); }
 
-/* 24 adet 8 saatlik slot (00-08, 01-09, ... 23-07) — backend'e shift_def_id olarak gönderilecek ID'ler */
+/* 24 adet 8 saatlik slot */
 function genSlots(): Slot[] {
   const out: Slot[] = [];
   for (let h = 0; h < 24; h++) {
@@ -40,7 +39,6 @@ export default function ShiftPlanner() {
   const [monday, setMonday] = useState<Date>(() => mondayOf(new Date()));
   const weekStartISO = toISODate(monday);
   const weekEnd = addDays(monday, 6);
-  const weekTitle = `${fmtTR.format(monday)}  ➜  ${fmtTR.format(weekEnd)}`;
   const dayLabels = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cts", "Paz"];
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => ({ label: dayLabels[i], iso: toISODate(addDays(monday, i)) })), [monday]);
 
@@ -52,7 +50,6 @@ export default function ShiftPlanner() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>("");
 
-  // departman grupları + collapsible
   const byDept = useMemo(() => {
     const map: Record<string, Employee[]> = {};
     for (const e of emps) (map[e.department || "—"] ||= []).push(e);
@@ -67,25 +64,19 @@ export default function ShiftPlanner() {
     setOpenDept(init);
   }, [byDept.length]);
 
-  // Backend /shifts yerine UI kendi 24 slotunu kullanır.
-  // Kaydetmeden önce backend'de karşılığı yoksa otomatik seed ederiz.
   async function ensureBackendShifts(): Promise<Record<string, number>> {
-    // map: "HH:MM-HH:MM" → shift_id
     const map: Record<string, number> = {};
-    // mevcutları çek
     let existing: { id: number; name: string; start_time: string; end_time: string; is_active: boolean }[] = [];
     try { existing = await api(`/shifts`); } catch { existing = []; }
     for (const s of existing) map[`${(s.start_time || "").slice(0,5)}-${(s.end_time || "").slice(0,5)}`] = s.id;
-    // eksikleri yarat
     for (const slot of DEFAULT_SLOTS) {
       const key = slot.name;
       if (map[key]) continue;
       try {
         const res = await api<{ id: number }>(`/shifts`, { method: "POST", body: JSON.stringify({ name: key, start_time: slot.start, end_time: slot.end, is_active: true }) });
         map[key] = (res as any).id;
-      } catch { /* idempotent */ }
+      } catch {}
     }
-    // tekrar çek ve kesinleştir
     try {
       existing = await api(`/shifts`);
       for (const s of existing) map[`${(s.start_time || "").slice(0,5)}-${(s.end_time || "").slice(0,5)}`] = s.id;
@@ -94,8 +85,7 @@ export default function ShiftPlanner() {
   }
 
   async function load() {
-    setLoading(true);
-    setErr(null);
+    setLoading(true); setErr(null);
     try {
       const [e, w, a] = await Promise.all([
         api<Employee[]>(`/employees`),
@@ -118,7 +108,6 @@ export default function ShiftPlanner() {
       setErr(e?.message || "Veriler alınamadı");
     } finally { setLoading(false); }
   }
-
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [weekStartISO]);
 
   function setCell(empId: string, dayISO: string, val: string) {
@@ -135,7 +124,7 @@ export default function ShiftPlanner() {
   async function save() {
     setSaving(true); setErr(null);
     try {
-      const idMap = await ensureBackendShifts(); // UI slotlarını backend'e senkronla
+      const idMap = await ensureBackendShifts();
       const payload: Assign[] = [];
       for (const empId of Object.keys(assigns)) {
         for (const d of days) {
@@ -160,7 +149,6 @@ export default function ShiftPlanner() {
   }
 
   const isDraft = week?.status !== "published";
-
   const page: React.CSSProperties = { maxWidth: 1280, margin: "0 auto", padding: 16, display: "grid", gap: 12 };
   const card: React.CSSProperties = { border: "1px solid #eef0f4", borderRadius: 12, background: "#fff", boxShadow: "0 6px 24px rgba(16,24,40,0.04)" };
   const badge: React.CSSProperties = { padding: "2px 8px", borderRadius: 999, fontWeight: 800, fontSize: 12, background: isDraft ? "#fff7ed" : "#ecfdf5", border: `1px solid ${isDraft ? "#fdba74" : "#a7f3d0"}`, color: isDraft ? "#9a3412" : "#065f46" };
@@ -218,7 +206,10 @@ export default function ShiftPlanner() {
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(140px,1fr))" }}>
                     {days.map((d) => {
                       const cell = assigns[emp.id]?.[d.iso];
-                      const value = cell?.status === "OFF" ? "OFF" : String(cell?.shift_def_id ?? "OFF");
+                      const value =
+                        !cell || cell.status === "OFF" || cell.shift_def_id == null
+                          ? "OFF"
+                          : String(cell.shift_def_id); // ← kritik düzeltme
                       return (
                         <div key={d.iso} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
                           <select value={value} onChange={(e) => setCell(emp.id, d.iso, e.target.value)} disabled={week?.status === "published"} style={{ width: "100%" }}>
