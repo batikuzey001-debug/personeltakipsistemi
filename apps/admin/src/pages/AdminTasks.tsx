@@ -5,7 +5,6 @@ const API =
   (import.meta.env.VITE_API_BASE_URL as string) ||
   "https://personel-takip-api-production.up.railway.app";
 
-/** API model */
 type Task = {
   id: number;
   date: string;
@@ -13,10 +12,10 @@ type Task = {
   title: string;
   department: string | null;
   assignee_employee_id: string | null;
-  due_ts: string | null;       // UTC ISO
+  due_ts: string | null;
   status: "open" | "done" | "late";
   is_done: boolean;
-  done_at: string | null;      // UTC ISO
+  done_at: string | null;
   done_by: string | null;
 };
 
@@ -27,7 +26,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!r.ok) throw new Error(await r.text());
-  return r.json() as Promise<T>;
+  return (await r.json()) as T;
 }
 
 const IST_TZ = "Europe/Istanbul";
@@ -48,21 +47,31 @@ function todayYmd() {
 }
 
 export default function AdminTasks() {
-  /** Filters */
+  // Filtreler
   const [date, setDate] = useState<string>(todayYmd());
   const [shift, setShift] = useState<string>("");
   const [dept, setDept] = useState<string>("");
-  const [q, setQ] = useState<string>("");
+  const [search, setSearch] = useState<string>("");
 
-  /** Data + ui */
+  // Data
   const [rows, setRows] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>("");
 
-  /** Load */
+  // Vardiya açık/kapalı durumları (hook'lar TOP-LEVEL'de!)
+  const SHIFT_ORDER = ["Gece", "Sabah", "Öğlen", "Akşam", "—"] as const;
+  const [openMap, setOpenMap] = useState<Record<string, boolean>>({
+    Gece: true,
+    Sabah: true,
+    Öğlen: true,
+    Akşam: true,
+    "—": true,
+  });
+
   async function load() {
     setErr(null);
+    setMsg("");
     setLoading(true);
     try {
       const qs = new URLSearchParams();
@@ -84,32 +93,31 @@ export default function AdminTasks() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Auto refresh (15s) + focus */
+  // 15 sn’de bir otomatik yenileme + sayfa odaklanınca yenile
   useEffect(() => {
-    const timer = setInterval(load, 15000);
+    const id = setInterval(load, 15000);
     const onFocus = () => load();
     window.addEventListener("focus", onFocus);
     return () => {
-      clearInterval(timer);
+      clearInterval(id);
       window.removeEventListener("focus", onFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date, shift, dept, q]);
+  }, [date, shift, dept, search]);
 
-  /** Client filtering (search) */
+  // Client-side arama
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return rows;
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
     return rows.filter((r) =>
       [r.title, r.department || "", r.assignee_employee_id || ""]
         .join(" ")
         .toLowerCase()
-        .includes(needle)
+        .includes(q)
     );
-  }, [rows, q]);
+  }, [rows, search]);
 
-  /** Group by shift */
-  const SHIFT_ORDER = ["Gece", "Sabah", "Öğlen", "Akşam", "—"] as const;
+  // Gruplama
   const groups = useMemo(() => {
     const map: Record<string, Task[]> = {};
     for (const r of filtered) (map[r.shift || "—"] = map[r.shift || "—"] || []).push(r);
@@ -119,7 +127,7 @@ export default function AdminTasks() {
     }));
   }, [filtered]);
 
-  /** Complete */
+  // Tamamla
   async function tick(id: number) {
     try {
       const who = (localStorage.getItem("email") || "admin").trim();
@@ -136,17 +144,59 @@ export default function AdminTasks() {
     }
   }
 
-  /** ---- STYLES (minimal & modern) ---- */
-  const page: React.CSSProperties = { maxWidth: 1120, margin: "0 auto", padding: 16, display: "grid", gap: 12 };
-  const surface: React.CSSProperties = { background: "#fff", border: "1px solid #eef0f4", borderRadius: 14, boxShadow: "0 6px 24px rgba(16,24,40,0.04)" };
+  /** ---- STYLES ---- */
+  const page: React.CSSProperties = {
+    maxWidth: 1120,
+    margin: "0 auto",
+    padding: 16,
+    display: "grid",
+    gap: 12,
+  };
+  const surface: React.CSSProperties = {
+    background: "#fff",
+    border: "1px solid #eef0f4",
+    borderRadius: 14,
+    boxShadow: "0 6px 24px rgba(16,24,40,0.04)",
+  };
   const section: React.CSSProperties = { ...surface, padding: 14 };
-  const headerRow: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between" };
+  const headerRow: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+  };
   const title: React.CSSProperties = { fontSize: 20, fontWeight: 800, margin: 0 };
   const hint: React.CSSProperties = { fontSize: 12, color: "#6b7280" };
-  const gridFilters: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px,1fr))", gap: 10, alignItems: "end" };
-  const label: React.CSSProperties = { fontSize: 12, color: "#6b7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".3px", marginBottom: 6 };
-  const btnPrimary: React.CSSProperties = { padding: "8px 12px", borderRadius: 10, border: "1px solid #2563eb", background: "#2563eb", color: "#fff", fontWeight: 700, cursor: "pointer" };
-  const btnGhost: React.CSSProperties = { padding: "8px 12px", borderRadius: 10, border: "1px solid #e5e7eb", background: "#fff", color: "#111", cursor: "pointer" };
+  const gridFilters: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(160px,1fr))",
+    gap: 10,
+    alignItems: "end",
+  };
+  const label: React.CSSProperties = {
+    fontSize: 12,
+    color: "#6b7280",
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: ".3px",
+    marginBottom: 6,
+  };
+  const btnPrimary: React.CSSProperties = {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #2563eb",
+    background: "#2563eb",
+    color: "#fff",
+    fontWeight: 700,
+    cursor: "pointer",
+  };
+  const btnGhost: React.CSSProperties = {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #e5e7eb",
+    background: "#fff",
+    color: "#111",
+    cursor: "pointer",
+  };
   const chip = (active: boolean): React.CSSProperties => ({
     padding: "6px 10px",
     borderRadius: 999,
@@ -156,9 +206,21 @@ export default function AdminTasks() {
     fontWeight: 700,
     cursor: "pointer",
   });
-  const groupHead: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid #eef1f4" };
+  const groupHead: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "12px 14px",
+    borderBottom: "1px solid #eef1f4",
+    cursor: "pointer",
+  };
   const meta: React.CSSProperties = { fontSize: 12, color: "#6b7280" };
-  const cols: React.CSSProperties = { display: "grid", gridTemplateColumns: "minmax(280px,1fr) 140px 160px 160px 120px", gap: 10, alignItems: "center" };
+  const cols: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "minmax(280px,1fr) 140px 160px 160px 120px",
+    gap: 10,
+    alignItems: "center",
+  };
   const th: React.CSSProperties = { ...hint, fontWeight: 700, textTransform: "uppercase" };
   const badge = (s: Task["status"]) => {
     const map = {
@@ -179,14 +241,14 @@ export default function AdminTasks() {
     } as React.CSSProperties;
   };
 
-  /** Stats (header right) */
+  // İstatistikler
   const total = filtered.length;
   const openCnt = filtered.filter((x) => x.status === "open").length;
   const lateCnt = filtered.filter((x) => x.status === "late").length;
 
   return (
     <div style={page}>
-      {/* Top header */}
+      {/* Üst başlık ve sayaçlar */}
       <div style={headerRow}>
         <h1 style={title}>Admin Görevleri</h1>
         <div style={{ display: "flex", gap: 12, alignItems: "center", color: "#111" }}>
@@ -202,87 +264,110 @@ export default function AdminTasks() {
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Filtreler */}
       <div style={section}>
-        <div style={gridFilters}>
-          <div>
-            <div style={label}>Tarih</div>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          </div>
-          <div>
-            <div style={label}>Vardiya</div>
-            <select value={shift} onChange={(e) => setShift(e.target.value)}>
-              <option value="">Tümü</option>
-              <option>Gece</option>
-              <option>Sabah</option>
-              <option>Öğlen</option>
-              <option>Akşam</option>
-            </select>
-          </div>
-          <div>
-            <div style={label}>Departman</div>
-            <select value={dept} onChange={(e) => setDept(e.target.value)}>
-              <option value="">Tümü</option>
-              <option>Admin</option>
-              <option>Finans</option>
-              <option>Bonus</option>
-              <option>LC</option>
-            </select>
-          </div>
-          <div>
-            <div style={label}>Ara</div>
-            <input placeholder="Görev başlığı, kişi…" value={q} onChange={(e) => setQ(e.target.value)} />
-          </div>
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button style={btnGhost} onClick={load} disabled={loading}>
-              {loading ? "Yükleniyor…" : "Listele"}
-            </button>
-            <button
-              style={btnGhost}
-              onClick={() => {
-                setDate(todayYmd());
-                setShift("");
-                setDept("");
-                setQ("");
-                load();
-              }}
-            >
-              Sıfırla
-            </button>
-          </div>
-        </div>
-
-        {/* Shift chips */}
-        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-          {["Gece", "Sabah", "Öğlen", "Akşam"].map((s) => {
-            const c = rows.filter((r) => (r.shift || "—") === s).length;
-            const active = shift === s;
-            return (
-              <button key={s} type="button" onClick={() => setShift(active ? "" : s)} style={chip(active)}>
-                {s} {c ? `• ${c}` : ""}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            load();
+          }}
+          style={{ display: "grid", gap: 10 }}
+        >
+          <div style={gridFilters}>
+            <div>
+              <div style={label}>Tarih</div>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            </div>
+            <div>
+              <div style={label}>Vardiya</div>
+              <select value={shift} onChange={(e) => setShift(e.target.value)}>
+                <option value="">Tümü</option>
+                <option>Gece</option>
+                <option>Sabah</option>
+                <option>Öğlen</option>
+                <option>Akşam</option>
+              </select>
+            </div>
+            <div>
+              <div style={label}>Departman</div>
+              <select value={dept} onChange={(e) => setDept(e.target.value)}>
+                <option value="">Tümü</option>
+                <option>Admin</option>
+                <option>Finans</option>
+                <option>Bonus</option>
+                <option>LC</option>
+              </select>
+            </div>
+            <div>
+              <div style={label}>Ara</div>
+              <input
+                placeholder="Görev başlığı, kişi…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button type="submit" style={btnGhost} disabled={loading}>
+                {loading ? "Yükleniyor…" : "Listele"}
               </button>
-            );
-          })}
-        </div>
+              <button
+                type="button"
+                style={btnGhost}
+                onClick={() => {
+                  setDate(todayYmd());
+                  setShift("");
+                  setDept("");
+                  setSearch("");
+                  load();
+                }}
+              >
+                Sıfırla
+              </button>
+            </div>
+          </div>
+
+          {/* Vardiya çipleri */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {["Gece", "Sabah", "Öğlen", "Akşam"].map((s) => {
+              const count = rows.filter((r) => (r.shift || "—") === s).length;
+              const active = shift === s;
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setShift(active ? "" : s)}
+                  style={chip(active)}
+                  title={`${s} (${count})`}
+                >
+                  {s} {count ? `• ${count}` : ""}
+                </button>
+              );
+            })}
+          </div>
+        </form>
       </div>
 
-      {/* Groups */}
+      {/* Gruplar */}
       {groups.map((g) => {
-        const [open, setOpen] = useState(true);
+        const isOpen = openMap[g.shift];
+        const toggle = () => setOpenMap((s) => ({ ...s, [g.shift]: !s[g.shift] }));
+        const totalG = g.items.length;
+        const openG = g.items.filter((x) => x.status === "open").length;
+        const lateG = g.items.filter((x) => x.status === "late").length;
+
         return (
           <div key={g.shift} style={{ ...surface }}>
-            <div style={groupHead} onClick={() => setOpen((v) => !v)}>
+            <div style={groupHead} onClick={toggle}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <strong>{g.shift} Vardiyası</strong>
                 <span style={meta}>
-                  {g.items.length} görev • Açık {g.items.filter((x) => x.status === "open").length} • Gecikmiş{" "}
-                  {g.items.filter((x) => x.status === "late").length}
+                  {totalG} görev • Açık {openG} • Gecikmiş {lateG}
                 </span>
               </div>
-              <div style={{ fontSize: 18 }}>{open ? "▾" : "▸"}</div>
+              <div style={{ fontSize: 18 }}>{isOpen ? "▾" : "▸"}</div>
             </div>
 
-            {open && (
+            {isOpen && (
               <div style={{ padding: 12 }}>
                 <div style={{ ...cols, marginBottom: 8 }}>
                   <div style={th}>Görev</div>
@@ -302,9 +387,16 @@ export default function AdminTasks() {
                       background: i % 2 ? "#fafafa" : "#fff",
                     }}
                   >
-                    {/* Görev adı + detay */}
+                    {/* Görev */}
                     <div>
-                      <div style={{ fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      <div
+                        style={{
+                          fontWeight: 800,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
                         {t.title}
                       </div>
                       <div style={meta}>
@@ -317,10 +409,12 @@ export default function AdminTasks() {
                       <span style={badge(t.status)}>
                         {t.status === "open" ? "Açık" : t.status === "late" ? "Gecikmiş" : "Tamamlandı"}
                       </span>
-                      {t.done_at && <div style={{ marginTop: 4, ...meta }}>İşaretlenme: {fmtISTTime(t.done_at)}</div>}
+                      {t.done_at && (
+                        <div style={{ marginTop: 4, ...meta }}>İşaretlenme: {fmtISTTime(t.done_at)}</div>
+                      )}
                     </div>
 
-                    {/* Atama */}
+                    {/* Atanan */}
                     <div style={meta}>{t.assignee_employee_id || "—"}</div>
 
                     {/* Bitiş */}
@@ -344,7 +438,7 @@ export default function AdminTasks() {
         );
       })}
 
-      {/* Empty state */}
+      {/* Empty */}
       {!loading && !groups.length && (
         <div style={{ ...section, textAlign: "center", color: "#6b7280" }}>
           Kriterlere uygun görev bulunamadı.
