@@ -4,13 +4,18 @@ import React, { useEffect, useMemo, useState } from "react";
 const API = (import.meta.env.VITE_API_BASE_URL as string) || "";
 
 /* Types */
-type Employee = { pk: number; employee_id: string; full_name: string; department?: string | null };
+type Employee = {
+  pk?: number;                 // olabilir, yoksa fallback
+  id?: string;                 // bazı API'lerde var
+  employee_id: string;         // iş kodu (RD-xxx)
+  full_name: string;
+  department?: string | null;
+};
 type Assign = { employee_id: string; date: string; week_start: string; shift_def_id: number | null; status: "ON" | "OFF" };
 type WeekStatus = "draft" | "published";
 type ShiftWeek = { week_start: string; status: WeekStatus; published_at?: string | null; published_by?: string | null };
 type ShiftDef = { id: number; start_time: string; end_time: string; is_active?: boolean };
 
-/* API helper */
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem("token") || "";
   const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...init });
@@ -18,7 +23,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json() as Promise<T>;
 }
 
-/* Date helpers */
+/* Dates */
 const fmtTR = new Intl.DateTimeFormat("tr-TR", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Europe/Istanbul" });
 function toISODate(d: Date): string { const z = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); return z.toISOString().slice(0, 10); }
 function mondayOf(d: Date): Date { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); const day = x.getDay(); const diff = (day === 0 ? -6 : 1) - day; x.setDate(x.getDate() + diff); return x; }
@@ -28,8 +33,11 @@ function pad2(n: number) { return n.toString().padStart(2, "0"); }
 /* 24×8 saat slot */
 const SLOT_KEYS = Array.from({ length: 24 }, (_, h) => `${pad2(h)}:00-${pad2((h + 8) % 24)}:00`);
 
+/* Benzersiz satır anahtarı */
+const rowKeyOf = (e: Employee) => String(e.pk ?? e.id ?? e.employee_id);
+
+/* Component */
 export default function ShiftPlanner() {
-  // Hafta
   const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const weekStartISO = toISODate(monday);
   const weekEnd = addDays(monday, 6);
@@ -39,28 +47,21 @@ export default function ShiftPlanner() {
     return Array.from({ length: 7 }, (_, i) => ({ label: labels[i], iso: toISODate(addDays(monday, i)) }));
   }, [monday]);
 
-  // Veriler
   const [emps, setEmps] = useState<Employee[]>([]);
   const [week, setWeek] = useState<ShiftWeek | null>(null);
-  const [defs, setDefs] = useState<Record<string, number>>({}); // "HH:MM-HH:MM" -> shift_def_id
-
-  // Hücre sözlüğü: **pk** ile anahtar → "PK|YYYY-MM-DD"
+  const [defs, setDefs] = useState<Record<string, number>>({});
   const [cells, setCells] = useState<Record<string, string>>({});
-
-  // UI
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>("");
 
-  // Departman grupları
   const byDept = useMemo(() => {
     const map: Record<string, Employee[]> = {};
     for (const e of emps) (map[e.department || "—"] ||= []).push(e);
     for (const k of Object.keys(map)) map[k].sort((a, b) => (a.full_name || a.employee_id).localeCompare(b.full_name || b.employee_id, "tr"));
     return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], "tr"));
   }, [emps]);
-
   const [openDept, setOpenDept] = useState<Record<string, boolean>>({});
   useEffect(() => {
     const o: Record<string, boolean> = {};
@@ -68,7 +69,6 @@ export default function ShiftPlanner() {
     setOpenDept(o);
   }, [byDept.length]);
 
-  // /shifts seed + id map
   async function ensureDefs(): Promise<Record<string, number>> {
     const map: Record<string, number> = {};
     let existing: ShiftDef[] = [];
@@ -86,7 +86,6 @@ export default function ShiftPlanner() {
     return map;
   }
 
-  // Yükleme
   async function load() {
     setLoading(true); setErr(null);
     try {
@@ -101,13 +100,16 @@ export default function ShiftPlanner() {
       setDefs(map);
 
       const dict: Record<string, string> = {};
-      for (const emp of e) for (const d of days) dict[`${emp.pk}|${d.iso}`] = "OFF";
+      for (const emp of e) {
+        const rk = rowKeyOf(emp);
+        for (const d of days) dict[`${rk}|${d.iso}`] = "OFF";
+      }
       for (const row of a) {
-        // row.employee_id = iş kodu. Eşleşen employee'yi pk bulmak için listeyi kullanalım.
         const emp = e.find(x => x.employee_id === row.employee_id);
         if (!emp) continue;
+        const rk = rowKeyOf(emp);
         const uiKey = row.shift_def_id ? Object.keys(map).find(k => map[k] === row.shift_def_id) : undefined;
-        dict[`${emp.pk}|${row.date}`] = row.status === "ON" && uiKey ? uiKey : "OFF";
+        dict[`${rk}|${row.date}`] = row.status === "ON" && uiKey ? uiKey : "OFF";
       }
       setCells(dict);
     } catch (x: any) {
@@ -116,22 +118,21 @@ export default function ShiftPlanner() {
   }
   useEffect(() => { load(); /* eslint-disable-line */ }, [weekStartISO]);
 
-  // Tek hücre güncelle
-  function setCell(pk: number, iso: string, value: string) {
-    const k = `${pk}|${iso}`;
+  function setCell(emp: Employee, iso: string, value: string) {
+    const k = `${rowKeyOf(emp)}|${iso}`;
     setCells(prev => (prev[k] === value ? prev : { ...prev, [k]: value }));
   }
 
-  // Kaydet — payload’ı **employee_id** ile gönder
   async function save() {
     setSaving(true); setErr(null);
     try {
       const payload: Assign[] = [];
       for (const emp of emps) {
+        const rk = rowKeyOf(emp);
         for (const d of days) {
-          const v = cells[`${emp.pk}|${d.iso}`] || "OFF";
+          const v = cells[`${rk}|${d.iso}`] || "OFF";
           payload.push({
-            employee_id: emp.employee_id,                    // iş kodu
+            employee_id: emp.employee_id,                       // iş kodu
             date: d.iso,
             week_start: weekStartISO,
             shift_def_id: v === "OFF" ? null : (defs[v] ?? null),
@@ -155,7 +156,6 @@ export default function ShiftPlanner() {
 
   const isDraft = week?.status !== "published";
 
-  // UI
   const page: React.CSSProperties = { maxWidth: 1280, margin: "0 auto", padding: 16, display: "grid", gap: 12 };
   const card: React.CSSProperties = { border: "1px solid #eef0f4", borderRadius: 12, background: "#fff", boxShadow: "0 6px 24px rgba(16,24,40,0.04)" };
   const badge: React.CSSProperties = { padding: "2px 8px", borderRadius: 999, fontWeight: 800, fontSize: 12, background: isDraft ? "#fff7ed" : "#ecfdf5", border: `1px solid ${isDraft ? "#fdba74" : "#a7f3d0"}`, color: isDraft ? "#9a3412" : "#065f46" };
@@ -204,38 +204,41 @@ export default function ShiftPlanner() {
                 <span style={{ fontSize: 18 }}>{isOpen ? "▾" : "▸"}</span>
               </div>
 
-              {isOpen && list.map((emp) => (
-                <div key={emp.pk} style={{ display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #eef1f4" }}>
-                  <div style={{ padding: 10 }}>
-                    <div style={{ fontWeight: 700 }}>{emp.full_name || emp.employee_id}</div>
-                    <div style={{ fontSize: 12, color: "#6b7280" }}>{emp.employee_id}</div>
+              {isOpen && list.map((emp) => {
+                const rk = rowKeyOf(emp);
+                return (
+                  <div key={rk} style={{ display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #eef1f4" }}>
+                    <div style={{ padding: 10 }}>
+                      <div style={{ fontWeight: 700 }}>{emp.full_name || emp.employee_id}</div>
+                      <div style={{ fontSize: 12, color: "#6b7280" }}>{emp.employee_id}</div>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(140px,1fr))" }}>
+                      {days.map((d) => {
+                        const key = `${rk}|${d.iso}`;
+                        const value = cells[key] ?? "OFF";
+                        return (
+                          <div key={key} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
+                            <select
+                              key={`sel-${key}-${value}`}
+                              id={`sel-${key}`} name={`sel-${key}`}
+                              autoComplete="off"
+                              value={value}
+                              onChange={(e) => setCell(emp, d.iso, e.target.value)}
+                              disabled={!isDraft}
+                              style={{ width: "100%" }}
+                            >
+                              <option value="OFF">OFF</option>
+                              {SLOT_KEYS.map((k) => (
+                                <option key={`opt-${key}-${k}`} value={k}>{k}</option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(140px,1fr))" }}>
-                    {days.map((d) => {
-                      const key = `${emp.pk}|${d.iso}`;              // benzersiz anahtar
-                      const value = cells[key] ?? "OFF";
-                      return (
-                        <div key={key} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
-                          <select
-                            key={`sel-${key}-${value}`}               // remount
-                            id={`sel-${key}`} name={`sel-${key}`}     // unique → autofill yok
-                            autoComplete="off"
-                            value={value}
-                            onChange={(e) => setCell(emp.pk, d.iso, e.target.value)}
-                            disabled={!isDraft}
-                            style={{ width: "100%" }}
-                          >
-                            <option value="OFF">OFF</option>
-                            {SLOT_KEYS.map((k) => (
-                              <option key={`opt-${key}-${k}`} value={k}>{k}</option>
-                            ))}
-                          </select>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           );
         })}
