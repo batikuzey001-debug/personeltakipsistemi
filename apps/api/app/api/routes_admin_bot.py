@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from pytz import timezone
+from app.services.admin_settings_service import get_bool, BONUS_TG_ENABLED_KEY, ADMIN_TASKS_TG_ENABLED_KEY, ATTENDANCE_TG_ENABLED_KEY, FINANCE_TG_ENABLED_KEY
+
 
 from app.deps import get_db
 from app.services.admin_settings_service import (
@@ -57,8 +59,18 @@ def read_settings(db: Session = Depends(get_db)):
         admin_tasks_tg_enabled=get_bool(db, ADMIN_TASKS_TG_ENABLED_KEY, False),
         bonus_tg_enabled=get_bool(db, BONUS_TG_ENABLED_KEY, False),
         finance_tg_enabled=get_bool(db, FINANCE_TG_ENABLED_KEY, False),
-        attendance_tg_enabled=get_bool(db, ATTENDANCE_TG_ENABLED_KEY, False),
+        attendance_tg_enabled=get_bool(db, ATTENDANCE_TG_ENABLED_KEY, False),   
     )
+@router.get("/status")
+def status(db: Session = Depends(get_db)):
+    """Bildirim anahtarlarının anlık (DB) durumunu döner."""
+    return {
+        "admin_tasks": bool(get_bool(db, ADMIN_TASKS_TG_ENABLED_KEY, False)),
+        "bonus": bool(get_bool(db, BONUS_TG_ENABLED_KEY, False)),
+        "attendance": bool(get_bool(db, ATTENDANCE_TG_ENABLED_KEY, False)),
+        "finance": bool(get_bool(db, FINANCE_TG_ENABLED_KEY, False)),
+    }
+    
 
 
 @router.put("/settings", response_model=BotSettingsOut)
