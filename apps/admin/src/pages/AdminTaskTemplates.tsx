@@ -30,7 +30,6 @@ export default function AdminTaskTemplates() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>("");
 
-  // Basit ekleme formu
   const [title, setTitle] = useState("");
   const [shift, setShift] = useState("");
   const [dept, setDept] = useState("");
@@ -40,9 +39,7 @@ export default function AdminTaskTemplates() {
   async function load() {
     setLoading(true);
     try {
-      const qs = new URLSearchParams();
-      // yalnız aktif şablonlar (backend zaten filtreliyor)
-      const data = await api<Template[]>(`/admin-tasks/templates?${qs.toString()}`);
+      const data = await api<Template[]>(`/admin-tasks/templates`);
       setRows(Array.isArray(data) ? data : []);
     } catch (e: any) {
       setErr(e?.message || "Şablonlar alınamadı");
@@ -90,6 +87,8 @@ export default function AdminTaskTemplates() {
     try {
       const res = await api<{created:number; skipped:number}>(`/admin-tasks/materialize`, { method: "POST" });
       setMsg(`Bugün oluşturulan görev: ${res.created} • Atlanan: ${res.skipped}`); setTimeout(()=>setMsg(""),1600);
+      // Üretimden sonra görev listesine yönlendir
+      window.location.href = "/admin/tasks";
     } catch (e: any) {
       setErr(e?.message || "Görev üretilemedi"); setTimeout(()=>setErr(null),1600);
     }
