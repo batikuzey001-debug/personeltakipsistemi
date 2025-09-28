@@ -121,7 +121,7 @@ export default function ShiftPlanner() {
     setCells(prev => (prev[k] === value ? prev : { ...prev, [k]: value }));
   }
 
-  // Kaydet — ÇOK ÖNEMLİ: emps ve days üzerinden payload kurulur. employee_id DAİMA set edilir.
+  // Kaydet — emps ve days üzerinden payload kurulur. employee_id DAİMA set edilir.
   async function save() {
     setSaving(true); setErr(null);
     try {
@@ -130,7 +130,7 @@ export default function ShiftPlanner() {
         for (const d of days) {
           const v = cells[`${emp.id}|${d.iso}`] || "OFF";
           payload.push({
-            employee_id: emp.id,                            // ← kritik
+            employee_id: emp.id,
             date: d.iso,
             week_start: weekStartISO,
             shift_def_id: v === "OFF" ? null : (defs[v] ?? null),
@@ -156,7 +156,7 @@ export default function ShiftPlanner() {
 
   // UI
   const page: React.CSSProperties = { maxWidth: 1280, margin: "0 auto", padding: 16, display: "grid", gap: 12 };
-  const card: React.CSSProperties = { border: "1px solid "#eef0f4", borderRadius: 12, background: "#fff", boxShadow: "0 6px 24px rgba(16,24,40,0.04)" };
+  const card: React.CSSProperties = { border: "1px solid #eef0f4", borderRadius: 12, background: "#fff", boxShadow: "0 6px 24px rgba(16,24,40,0.04)" };
   const badge: React.CSSProperties = { padding: "2px 8px", borderRadius: 999, fontWeight: 800, fontSize: 12, background: isDraft ? "#fff7ed" : "#ecfdf5", border: `1px solid ${isDraft ? "#fdba74" : "#a7f3d0"}`, color: isDraft ? "#9a3412" : "#065f46" };
 
   return (
@@ -216,8 +216,8 @@ export default function ShiftPlanner() {
                       return (
                         <div key={key} style={{ padding: 8, borderLeft: "1px solid #eef1f4" }}>
                           <select
-                            key={`sel-${key}-${value}`}                 // remount
-                            id={`sel-${key}`} name={`sel-${key}`}       // benzersiz
+                            key={`sel-${key}-${value}`}
+                            id={`sel-${key}`} name={`sel-${key}`}
                             autoComplete="off"
                             value={value}
                             onChange={(e) => setCell(emp.id, d.iso, e.target.value)}
