@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import text, func
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from pytz import timezone
 
@@ -24,11 +24,12 @@ UTC = timezone("UTC")
 
 router = APIRouter(prefix="/admin-bot", tags=["admin_bot"])
 
-# ---------------- Common ----------------
+# ---------------- Health / Ping ----------------
 @router.get("/ping")
 def ping():
     return {"ok": True, "service": "admin-bot"}
 
+# ---------------- Settings ----------------
 class BotSettingsOut(BaseModel):
     admin_tasks_tg_enabled: bool
     bonus_tg_enabled: bool
@@ -40,14 +41,6 @@ class BotSettingsIn(BaseModel):
     bonus_tg_enabled: bool | None = None
     finance_tg_enabled: bool | None = None
     attendance_tg_enabled: bool | None = None
-
-def _must_bonus_enabled(db: Session):
-    if not get_bool(db, BONUS_TG_ENABLED_KEY, False):
-        raise HTTPException(status_code=400, detail="bonus notifications disabled")
-
-def _send_bonus_or_400(message: str):
-    if not send_bonus_to_both(message):
-        raise HTTPException(status_code=400, detail="send failed")
 
 @router.get("/settings", response_model=BotSettingsOut)
 def read_settings(db: Session = Depends(get_db)):
@@ -79,6 +72,15 @@ def status(db: Session = Depends(get_db)):
         "finance": bool(get_bool(db, FINANCE_TG_ENABLED_KEY, False)),
     }
 
+# ---------------- Dahili ----------------
+def _must_bonus_enabled(db: Session):
+    if not get_bool(db, BONUS_TG_ENABLED_KEY, False):
+        raise HTTPException(status_code=400, detail="bonus notifications disabled")
+
+def _send_bonus_or_400(message: str):
+    if not send_bonus_to_both(message):
+        raise HTTPException(status_code=400, detail="send failed")
+
 # ---------------- BONUS: Gün Sonu ----------------
 @router.post("/trigger/bonus/daily", dependencies=[Depends(RolesAllowed("super_admin","admin"))])
 def trigger_bonus_daily(
@@ -89,7 +91,7 @@ def trigger_bonus_daily(
     _must_bonus_enabled(db)
     now_ist = datetime.now(IST)
     if d:
-        try: y, m, dd = map(int, d.split("-")); target = date(y, m, dd)
+        try: y,m,dd = map(int, d.split("-")); target = date(y,m,dd)
         except Exception: raise HTTPException(status_code=400, detail="d format YYYY-MM-DD")
     else:
         target = (now_ist - timedelta(days=1)).date()
@@ -172,7 +174,7 @@ def trigger_bonus_periodic(
     _send_bonus_or_400(msg)
     return {"ok": True, "window": f"{ctx['win_start']}-{ctx['win_end']}", "date": ctx["date_label"]}
 
-# ---------------- BONUS: Gün içi İlk KT eşiğini aşan işlemleri TELEGRAM'a gönder (metin + kişi adı) ----------------
+# ---------------- BONUS: Gün içi İlk KT aşımı — TELEGRAM'a gönder (origin METNİ + cevaplayan AD) ----------------
 def _today_edges_utc():
     now_ist = datetime.now(IST)
     start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -198,37 +200,42 @@ def trigger_bonus_kt_over_today(
     db: Session = Depends(get_db),
 ):
     """
-    Gün içi (IST) İlk KT (reply_first - origin) eşiğini aşan işlemleri
+    Gün içi (IST) İlk KT eşiğini aşan işlemleri;
     *origin mesaj METNİ* ve *YANITI VEREN KİŞİNİN ADI* ile TELEGRAM'a gönderir.
-    (Kimlik/görev numarası/correlation GÖNDERMEZ.)
+    (Correlation/ID göstermez.)
     """
     _must_bonus_enabled(db)
     frm_utc, to_utc, frm_ist, to_ist = _today_edges_utc()
 
+    # Origin metnini raw_messages.json'dan, cevaplayan adını employees.full_name'den al.
     sql = """
     WITH
-    o AS (
-      SELECT e.correlation_id AS corr,
-             MIN(e.ts) AS origin_ts
+    o_ev AS (
+      SELECT DISTINCT ON (e.correlation_id)
+             e.correlation_id AS corr,
+             e.ts AS origin_ts,
+             e.chat_id, e.msg_id
       FROM events e
       WHERE e.source_channel='bonus' AND e.type='origin'
-      GROUP BY 1
+      ORDER BY e.correlation_id, e.ts ASC
     ),
-    fr AS (
-      SELECT e.correlation_id AS corr,
-             MIN(e.ts) AS first_ts
+    fr_ev AS (
+      SELECT DISTINCT ON (e.correlation_id)
+             e.correlation_id AS corr,
+             e.ts AS first_ts,
+             e.employee_id
       FROM events e
       WHERE e.source_channel='bonus' AND e.type='reply_first'
-      GROUP BY 1
+      ORDER BY e.correlation_id, e.ts ASC
     ),
     base AS (
-      SELECT fr.corr, fr.first_ts, o.origin_ts
-      FROM fr JOIN o ON o.corr = fr.corr
-      WHERE fr.first_ts >= :frm AND fr.first_ts <= :to
+      SELECT f.corr, f.first_ts, o.origin_ts, o.chat_id, o.msg_id, f.employee_id
+      FROM fr_ev f
+      JOIN o_ev o ON o.corr = f.corr
+      WHERE f.first_ts >= :frm AND f.first_ts <= :to
     ),
     secs AS (
-      SELECT b.corr, b.first_ts, b.origin_ts,
-             EXTRACT(EPOCH FROM (b.first_ts - b.origin_ts)) AS first_sec
+      SELECT b.*, EXTRACT(EPOCH FROM (b.first_ts - b.origin_ts)) AS first_sec
       FROM base b
       WHERE b.first_ts IS NOT NULL AND b.origin_ts IS NOT NULL
     )
@@ -236,19 +243,21 @@ def trigger_bonus_kt_over_today(
       s.origin_ts,
       s.first_ts,
       s.first_sec,
-      -- origin METNİ
+      -- origin METNİ (raw_messages.json içinden)
       COALESCE(
-        (SELECT e.payload->>'talep_text' FROM events e WHERE e.source_channel='bonus' AND e.correlation_id=s.corr AND e.type='origin' ORDER BY e.ts ASC LIMIT 1),
-        (SELECT e.payload->>'text'       FROM events e WHERE e.source_channel='bonus' AND e.correlation_id=s.corr AND e.type='origin' ORDER BY e.ts ASC LIMIT 1)
+        rm.json->'message'->>'text',
+        rm.json->'edited_message'->>'text',
+        rm.json->'channel_post'->>'text',
+        rm.json->'edited_channel_post'->>'text',
+        rm.json->'message'->>'caption',
+        rm.json->'edited_message'->>'caption'
       ) AS origin_text,
-      -- yanıt verenin ADI (employee full_name)
-      (SELECT emp.full_name
-         FROM events e
-         LEFT JOIN employees emp ON emp.employee_id = e.employee_id
-        WHERE e.source_channel='bonus' AND e.correlation_id=s.corr AND e.type='reply_first'
-        ORDER BY e.ts ASC
-        LIMIT 1) AS responder_name
+      emp.full_name AS responder_name
     FROM secs s
+    LEFT JOIN raw_messages rm
+           ON rm.chat_id = s.chat_id AND rm.msg_id = s.msg_id
+    LEFT JOIN employees emp
+           ON emp.employee_id = s.employee_id
     WHERE s.first_sec > :thr
     ORDER BY s.first_sec DESC
     LIMIT :lim;
@@ -259,7 +268,7 @@ def trigger_bonus_kt_over_today(
         {"frm": frm_utc, "to": to_utc, "thr": threshold_sec, "lim": limit},
     ).mappings().all()
 
-    # Mesaj (yalnız metin ve kişi adı; correlation/numara yok)
+    # Mesaj (yalnız metin ve kişi adı)
     hdr_date = frm_ist.strftime("%d.%m.%Y")
     hdr_win  = f"{frm_ist.strftime('%H:%M')}–{to_ist.strftime('%H:%M')}"
     lines: List[str] = [f"📣 *BONUS • Gün içi İlk KT > {threshold_sec} sn* — *{hdr_date} {hdr_win}*", ""]
@@ -273,7 +282,7 @@ def trigger_bonus_kt_over_today(
             origin_hm   = r["origin_ts"].astimezone(IST).strftime("%H:%M")
             first_hm    = r["first_ts"].astimezone(IST).strftime("%H:%M")
             delta       = _mmss(float(r["first_sec"]))
-            # ÇIKTI: 10:23 <origin mesajı> — Yanıt: 10:24 (Δ 00:45) • Personel Adı
+            # Örn: 10:23 <origin metni> — Yanıt: 10:24 (Δ 00:45) • Personel Adı
             lines.append(f"• {origin_hm} {origin_text} — Yanıt: {first_hm} (_Δ {delta}_) • *{responder}*")
 
     text_msg = "\n".join(lines)
@@ -281,4 +290,4 @@ def trigger_bonus_kt_over_today(
     if not sent:
         raise HTTPException(status_code=400, detail="send failed")
 
-    return KtOverSendResp(threshold_sec=threshold_sec, sent=True, count=len(rows))
+    return {"threshold_sec": threshold_sec, "sent": True, "count": len(rows)}
