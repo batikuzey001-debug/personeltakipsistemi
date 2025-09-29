@@ -11,6 +11,15 @@ type BotSettings = {
   attendance_tg_enabled?: boolean;
 };
 
+type KtItem = {
+  correlation_id: string;
+  employee_id?: string | null;
+  origin_ts: string;
+  first_ts: string;
+  first_sec: number;
+};
+type KtResp = { threshold_sec: number; count: number; items: KtItem[] };
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem("token") || "";
   const r = await fetch(`${API}${path}`, {
@@ -35,6 +44,23 @@ function yesterdayIST() {
   ).padStart(2, "0")}`;
 }
 
+// IST helpers
+const IST_TZ = "Europe/Istanbul";
+const fmtIST = (iso?: string) =>
+  iso
+    ? new Intl.DateTimeFormat("tr-TR", {
+        timeZone: IST_TZ,
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(iso))
+    : "—";
+const fmtMMSS = (sec: number) => {
+  const s = Math.max(0, Math.round(sec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
+};
+
 export default function AdminBotSettings() {
   const [data, setData] = useState<BotSettings | null>(null);
   const [loading, setLoading] = useState(false);
@@ -50,6 +76,10 @@ export default function AdminBotSettings() {
   // Bonus 2 saatlik: bitiş (IST) ve uyarı eşiği %
   const [bonus2hEnd, setBonus2hEnd] = useState<string>(""); // YYYY-MM-DDTHH:MM (boş=şimdi)
   const [bonus2hWarn, setBonus2hWarn] = useState<number>(25);
+
+  // Gün içi KT>threshold liste paneli
+  const [ktList, setKtList] = useState<KtItem[] | null>(null);
+  const [ktTitle, setKtTitle] = useState<string>("");
 
   async function load() {
     setMsg("");
@@ -100,6 +130,24 @@ export default function AdminBotSettings() {
     }
   }
 
+  // Gün içi İlk KT > threshold listele
+  async function fetchKtOver(threshold: number) {
+    setMsg("");
+    setErr("");
+    setLoading(true);
+    try {
+      const res = await api<KtResp>(`/admin-bot/bonus/kt-over-today?threshold_sec=${threshold}`);
+      setKtList(res.items || []);
+      setKtTitle(`Gün içi İlk KT > ${threshold} sn — ${res.count} kayıt`);
+    } catch (e: any) {
+      setErr(e?.message || "Liste alınamadı.");
+      setKtList(null);
+      setKtTitle("");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const container: React.CSSProperties = {
     maxWidth: 900,
     margin: "0 auto",
@@ -121,6 +169,23 @@ export default function AdminBotSettings() {
     justifyContent: "space-between",
     gap: 12,
     flexWrap: "wrap",
+  };
+  const listHead: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "1fr 100px 100px 80px",
+    gap: 8,
+    fontSize: 12,
+    fontWeight: 700,
+    color: "#374151",
+    padding: "4px 2px",
+  };
+  const listRow: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "1fr 100px 100px 80px",
+    gap: 8,
+    fontSize: 12,
+    padding: "6px 2px",
+    borderTop: "1px solid #f3f4f6",
   };
 
   return (
@@ -251,8 +316,7 @@ export default function AdminBotSettings() {
               onClick={() => {
                 const qs = new URLSearchParams();
                 if (bonus2hEnd.trim()) qs.set("end", bonus2hEnd.trim());
-                qs.set("sla_first_sec", String(slaFirst));
-                qs.set("sla_warn_pct", String(bonus2hWarn));
+                qs.set("kt30_sec", String(slaFirst)); // backend param ismi: kt30_sec (eşik)
                 post(`/admin-bot/trigger/bonus/periodic?${qs.toString()}`);
               }}
             >
@@ -307,6 +371,42 @@ export default function AdminBotSettings() {
             </button>
           </div>
         </div>
+
+        {/* BONUS: Gün içi İlk KT aşımı (30 sn / 60 sn) */}
+        <div style={{ ...row, borderTop: "1px solid #f3f4f6", paddingTop: 8 }}>
+          <div>
+            <b>Bonus — Gün içi İlk KT İhlalleri</b>
+            <div style={{ fontSize: 12, color: "#666" }}>İlk yanıt (reply_first − origin) süresi eşiği</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button onClick={() => fetchKtOver(30)}>&gt; 30 sn</button>
+            <button onClick={() => fetchKtOver(60)}>&gt; 60 sn</button>
+          </div>
+        </div>
+
+        {/* Liste (varsa) */}
+        {ktList && (
+          <div style={{ border: "1px solid #eef0f4", borderRadius: 8, padding: 10 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>{ktTitle}</div>
+            <div style={listHead}>
+              <div>Correlation • Personel</div>
+              <div>Origin</div>
+              <div>İlk KT</div>
+              <div>Δ (dk:ss)</div>
+            </div>
+            {(ktList || []).map((it) => (
+              <div key={`${it.correlation_id}-${it.first_ts}`} style={listRow}>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {it.correlation_id} {it.employee_id ? `• ${it.employee_id}` : ""}
+                </div>
+                <div>{fmtIST(it.origin_ts)}</div>
+                <div>{fmtIST(it.first_ts)}</div>
+                <div style={{ fontWeight: 700 }}>{fmtMMSS(it.first_sec)}</div>
+              </div>
+            ))}
+            {!ktList.length && <div style={{ fontSize: 12, color: "#6b7280" }}>Kayıt yok.</div>}
+          </div>
+        )}
 
         {msg && <div style={{ color: "#0a6d37", fontSize: 12 }}>{msg}</div>}
         {err && <div style={{ color: "#b00020", fontSize: 12 }}>{err}</div>}
