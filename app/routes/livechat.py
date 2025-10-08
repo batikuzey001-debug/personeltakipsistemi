@@ -1,28 +1,32 @@
-# app/routes/livechat.py
-import os, httpx
+import os
+import httpx
 from fastapi import APIRouter, HTTPException
 
-LC = os.getenv("TEXT_API_URL", "https://api.text.com/v3.3")
-B64 = os.environ["TEXT_BASE64_TOKEN"]
+LC_BASE = os.getenv("TEXT_API_URL", "https://api.text.com/v3.3")
+B64 = os.getenv("TEXT_BASE64_TOKEN", "")
 
-r = APIRouter(prefix="/livechat", tags=["livechat"])
+router = APIRouter(prefix="/livechat", tags=["livechat"])
 
-@r.get("/agents")
-async def agents():
+def _auth():
+    if not B64:
+        raise HTTPException(401, "TEXT_BASE64_TOKEN missing")
+    return {"Authorization": f"Basic {B64}"}
+
+@router.get("/agents")
+async def list_agents():
     async with httpx.AsyncClient(timeout=30) as c:
-        h = {"Authorization": f"Basic {B64}"}
-        res = await c.get(f"{LC}/agents", headers=h)
-        if res.status_code != 200:
-            raise HTTPException(res.status_code, res.text)
-        return res.json()
+        r = await c.get(f"{LC_BASE}/agents", headers=_auth())
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, r.text)
+    return r.json()
 
-@r.get("/chats")
-async def chats(from_ts: str, to_ts: str, page: str | None = None):
+@router.get("/chats")
+async def list_chats(from_ts: str, to_ts: str, page: str | None = None):
     params = {"from": from_ts, "to": to_ts}
-    if page: params["page"] = page  # varsa sayfalama
+    if page:
+        params["page"] = page
     async with httpx.AsyncClient(timeout=60) as c:
-        h = {"Authorization": f"Basic {B64}"}
-        res = await c.get(f"{LC}/chats", headers=h, params=params)
-        if res.status_code != 200:
-            raise HTTPException(res.status_code, res.text)
-        return res.json()
+        r = await c.get(f"{LC_BASE}/chats", headers=_auth(), params=params)
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, r.text)
+    return r.json()
