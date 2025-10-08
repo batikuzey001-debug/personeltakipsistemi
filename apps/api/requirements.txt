@@ -5,19 +5,22 @@ fastapi
 uvicorn[standard]
 sqlalchemy>=2.0
 psycopg2-binary>=2.9,<3.0
-pydantic
+pydantic>=2.0
 pydantic-settings
 email-validator
 python-dateutil
 
 # --- Auth / Crypto ---
-# passlib[bcrypt] -> hem bcrypt backend'ini hem de passlib'i getirir.
-# bcrypt'i ayrıca ekliyoruz; bazı build ortamlarında explicit gerebiliyor.
 passlib[bcrypt]==1.7.4
 bcrypt>=4.0,<5
 python-jose[cryptography]==3.3.0
 
 # --- HTTP / Schedulers / TZ ---
 requests==2.32.3
+httpx==0.27.2          # LiveChat API entegrasyonu için eklendi
 APScheduler==3.10.4
 pytz==2024.1
+
+# --- Diğer Opsiyoneller ---
+# asyncpg==0.29.0      # gerekirse async PostgreSQL bağlantısı için
+# orjson==3.10.3       # performanslı JSON parse için (opsiyonel)
