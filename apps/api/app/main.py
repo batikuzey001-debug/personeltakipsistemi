@@ -40,6 +40,10 @@ from app.api.routes_shifts import router as shifts_router
 from app.api.routes_shift_assignments import router as shift_assignments_router
 from app.api.routes_shift_weeks import router as shift_weeks_router
 
+# ⬇️ LIVECHAT keşif router (YENİ)
+# app/api/routes_livechat.py içinde /livechat/agents ve /livechat/chats uçları bulunur.
+from app.api.routes_livechat import router as livechat_router  # NEW
+
 # Scheduler
 from app.scheduler.admin_tasks_jobs import start_scheduler
 
@@ -149,6 +153,7 @@ def run_startup_migrations():
             except Exception as e:
                 print(f"[startup-migration] skip/err: {e}")
 
+    # Scheduler
     try:
         if os.getenv("RUN_SCHEDULER", "1") == "1":
             start_scheduler()
@@ -157,6 +162,12 @@ def run_startup_migrations():
             print("[scheduler] disabled by RUN_SCHEDULER")
     except Exception as e:
         print(f"[scheduler] start err: {e}")
+
+    # LiveChat env kontrol (gözlem amaçlı log)
+    if os.getenv("TEXT_BASE64_TOKEN"):
+        print("[livechat] env ok (TEXT_BASE64_TOKEN set)")
+    else:
+        print("[livechat] TEXT_BASE64_TOKEN not set; /livechat uçları 401 dönebilir")
 
 @app.get("/healthz")
 def healthz():
@@ -185,3 +196,4 @@ app.include_router(admin_notify_router)
 app.include_router(shifts_router)               # /shifts
 app.include_router(shift_assignments_router)    # /shift-assignments
 app.include_router(shift_weeks_router)          # /shift-weeks
+app.include_router(livechat_router)             # /livechat  ← YENİ
