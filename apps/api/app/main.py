@@ -40,13 +40,21 @@ from app.api.routes_shifts import router as shifts_router
 from app.api.routes_shift_assignments import router as shift_assignments_router
 from app.api.routes_shift_weeks import router as shift_weeks_router
 
-# ⬇️ LIVECHAT keşif router (opsiyonel yükleme)
+# ⬇️ LIVECHAT keşif router (opsiyonel)
 _livechat_router = None
 try:
-    from app.api.routes_livechat import router as livechat_router  # varsa yükle
+    from app.api.routes_livechat import router as livechat_router
     _livechat_router = livechat_router
 except Exception as e:
     print(f"[livechat] router not loaded: {e}")
+
+# ⬇️ LIVECHAT RAPOR router (yeni, opsiyonel)
+_livechat_report_router = None
+try:
+    from app.api.routes_livechat_report import router as livechat_report_router
+    _livechat_report_router = livechat_report_router
+except Exception as e:
+    print(f"[livechat-report] router not loaded: {e}")
 
 # Scheduler
 from app.scheduler.admin_tasks_jobs import start_scheduler
@@ -75,7 +83,7 @@ MIGRATIONS_SQL = [
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS phone VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
-    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
+    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
 
     "DO $$ BEGIN "
     "  IF EXISTS (SELECT 1 FROM information_schema.columns "
@@ -171,7 +179,7 @@ def run_startup_migrations():
     if os.getenv("TEXT_BASE64_TOKEN"):
         print("[livechat] env ok (TEXT_BASE64_TOKEN set)")
     else:
-        print("[livechat] TEXT_BASE64_TOKEN not set; /livechat uçları 401 dönebilir")
+        print("[livechat] TEXT_BASE64_TOKEN not set; /livechat ve /report uçları 401 dönebilir")
 
 @app.get("/healthz")
 def healthz():
@@ -197,8 +205,10 @@ app.include_router(admin_bot_router)
 app.include_router(admin_notify_router)
 
 # ⬇️ EKLENENLER
-app.include_router(shifts_router)               # /shifts
-app.include_router(shift_assignments_router)    # /shift-assignments
-app.include_router(shift_weeks_router)          # /shift-weeks
+app.include_router(shifts_router)                # /shifts
+app.include_router(shift_assignments_router)     # /shift-assignments
+app.include_router(shift_weeks_router)           # /shift-weeks
 if _livechat_router:
-    app.include_router(_livechat_router)        # /livechat
+    app.include_router(_livechat_router)         # /livechat
+if _livechat_report_router:
+    app.include_router(_livechat_report_router)  # /report/*
