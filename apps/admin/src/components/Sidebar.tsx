@@ -22,9 +22,10 @@ export default function Sidebar() {
 
   const adminOnly = [
     { to: "/reports/daily", label: "Rapor • Günlük (Bonus/Finans)" },
+    { to: "/reports/livechat", label: "Rapor • Canlı Destek" }, // ✅ yeni eklendi
     { to: "/admin/tasks", label: "Admin Görevleri" },
     { to: "/admin/tasks/templates", label: "Görev Şablonları" },
-    { to: "/shift-planner", label: "Shift Planlama" },   // yalnız planlayıcı kaldı
+    { to: "/shift-planner", label: "Shift Planlama" },
     { to: "/admin/bot", label: "Bot İşlemleri" },
     { to: "/admin/notifications", label: "Bildirimler" },
     { to: "/identities", label: "Kişi Eşleştirme" },
