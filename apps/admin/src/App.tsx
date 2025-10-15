@@ -18,6 +18,7 @@ import AdminTaskTemplates from "./pages/AdminTaskTemplates";
 import AdminBotSettings from "./pages/AdminBotSettings";
 import Notifications from "./pages/Notifications";
 import ShiftPlanner from "./pages/ShiftPlanner"; // planlayıcı kaldı
+import LivechatAgentReport from "./pages/LivechatAgentReport"; // ✅ yeni
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
   constructor(props: { children: React.ReactNode }) { super(props); this.state = { hasError: false }; }
@@ -57,6 +58,7 @@ export default function App() {
         <Route path="/employees/:employee_id" element={<Protected><Layout><EmployeeProfile /></Layout></Protected>} />
 
         <Route path="/reports/daily" element={<Protected><Layout><ReportsDaily /></Layout></Protected>} />
+        <Route path="/reports/livechat" element={<Protected><Layout><LivechatAgentReport /></Layout></Protected>} /> {/* ✅ yeni rota */}
 
         <Route path="/admin/tasks" element={<Protected><Layout><AdminTasks /></Layout></Protected>} />
         <Route path="/admin/tasks/templates" element={<Protected><Layout><AdminTaskTemplates /></Layout></Protected>} />
