@@ -48,7 +48,7 @@ try:
 except Exception as e:
     print(f"[livechat] router not loaded: {e}")
 
-# ⬇️ LIVECHAT RAPOR router (yeni, opsiyonel)
+# ⬇️ LIVECHAT RAPOR router (opsiyonel)
 _livechat_report_router = None
 try:
     from app.api.routes_livechat_report import router as livechat_report_router
@@ -58,9 +58,6 @@ except Exception as e:
 
 # Scheduler
 from app.scheduler.admin_tasks_jobs import start_scheduler
-
-# tabloları oluştur
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -72,6 +69,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# tabloları oluştur
+Base.metadata.create_all(bind=engine)
 
 # ---- Startup migrasyonları ----
 MIGRATIONS_SQL = [
@@ -209,6 +209,13 @@ app.include_router(shifts_router)                # /shifts
 app.include_router(shift_assignments_router)     # /shift-assignments
 app.include_router(shift_weeks_router)           # /shift-weeks
 if _livechat_router:
+    print("[livechat] router included at /livechat")
     app.include_router(_livechat_router)         # /livechat
+else:
+    print("[livechat] router missing")
+
 if _livechat_report_router:
+    print("[livechat-report] router included at /report")
     app.include_router(_livechat_report_router)  # /report/*
+else:
+    print("[livechat-report] router missing")
