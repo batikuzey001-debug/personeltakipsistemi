@@ -3,6 +3,18 @@ import { useEffect, useMemo, useState } from "react";
 
 const API = import.meta.env.VITE_API_BASE_URL as string;
 
+type Row = {
+  agent_email: string;
+  total_chats: number;
+  first_response_time_sec: number | null;
+  avg_response_time_sec: number | null;   // ART
+  avg_handle_time_sec: number | null;     // AHT
+  csat_percent: number | null;
+  csat_good?: number | null;
+  csat_bad?: number | null;
+  csat_total?: number | null;
+};
+
 function fmtSec(v: number | null | undefined) {
   if (v == null || isNaN(v as number)) return "-";
   const s = Math.round(Number(v));
@@ -11,32 +23,20 @@ function fmtSec(v: number | null | undefined) {
   return `${m}:${r.toString().padStart(2, "0")}`;
 }
 
-type Row = {
-  agent_email: string;
-  total_chats: number;
-  first_response_time_sec: number | null;
-  avg_handle_time_sec: number | null;
-  csat_percent: number | null;
-  csat_good?: number | null;
-  csat_bad?: number | null;
-  csat_total?: number | null;
-};
-
 export default function LivechatAgentReport() {
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [q, setQ] = useState(""); // arama (e-posta)
+  const [q, setQ] = useState(""); // e-posta arama
 
   const load = async () => {
-    setLoading(true);
-    setErr(null);
+    setLoading(true); setErr(null);
     try {
       const r = await fetch(`${API}/report/daily?date=${date}`);
       if (!r.ok) throw new Error(await r.text());
       const j = await r.json();
-      setRows(j.rows || []);
+      setRows((j?.rows || []) as Row[]);
     } catch (e: any) {
       setErr(e?.message || "Hata");
     } finally {
@@ -44,16 +44,12 @@ export default function LivechatAgentReport() {
     }
   };
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useEffect(() => { load(); /* ilk yük */ }, []);
 
   const filtered = useMemo(() => {
-    const f = (rows || []).filter((x) =>
+    const f = (rows || []).filter(x =>
       q ? x.agent_email.toLowerCase().includes(q.toLowerCase()) : true
     );
-    // toplam chate göre azalan
     return f.sort((a, b) => (b.total_chats || 0) - (a.total_chats || 0));
   }, [rows, q]);
 
@@ -62,30 +58,19 @@ export default function LivechatAgentReport() {
       <h1 className="text-xl font-semibold mb-3">Rapor • Canlı Destek (Günlük)</h1>
 
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="border px-2 py-1"
-        />
-        <button onClick={load} className="border px-3 py-1">
-          Yenile
-        </button>
+        <input type="date" value={date} onChange={e=>setDate(e.target.value)} className="border px-2 py-1"/>
+        <button onClick={load} className="border px-3 py-1">Yenile</button>
         <input
           placeholder="E-posta ara"
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={e=>setQ(e.target.value)}
           className="border px-2 py-1 ml-auto"
-          style={{ minWidth: 220 }}
+          style={{minWidth:220}}
         />
       </div>
 
       {loading && <div>Yükleniyor…</div>}
-      {err && (
-        <div style={{ color: "#b91c1c" }} className="mb-2">
-          Hata: {err}
-        </div>
-      )}
+      {err && <div className="mb-2" style={{color:"#b91c1c"}}>Hata: {err}</div>}
 
       <table className="w-full text-sm border">
         <thead className="bg-gray-100">
@@ -93,39 +78,35 @@ export default function LivechatAgentReport() {
             <th className="p-2 text-left">Agent (e-posta)</th>
             <th className="p-2 text-center">Chat</th>
             <th className="p-2 text-center">FRT</th>
+            <th className="p-2 text-center">ART</th>
             <th className="p-2 text-center">AHT</th>
             <th className="p-2 text-center">CSAT %</th>
             <th className="p-2 text-center">İyi/Kötü</th>
           </tr>
         </thead>
         <tbody>
-          {filtered.map((r) => (
+          {filtered.map(r => (
             <tr key={r.agent_email} className="border-t">
               <td className="p-2">{r.agent_email}</td>
               <td className="p-2 text-center">{r.total_chats ?? 0}</td>
               <td className="p-2 text-center">{fmtSec(r.first_response_time_sec)}</td>
+              <td className="p-2 text-center">{fmtSec(r.avg_response_time_sec)}</td>
               <td className="p-2 text-center">{fmtSec(r.avg_handle_time_sec)}</td>
               <td className="p-2 text-center">
                 {r.csat_percent != null ? `${r.csat_percent.toFixed(2)}%` : "-"}
               </td>
               <td className="p-2 text-center">
-                {r.csat_good ?? 0}/{r.csat_bad ?? 0}
+                {(r.csat_good ?? 0)}/{(r.csat_bad ?? 0)}
               </td>
             </tr>
           ))}
           {!loading && !err && filtered.length === 0 && (
-            <tr>
-              <td className="p-2 text-center" colSpan={6}>
-                Kayıt yok
-              </td>
-            </tr>
+            <tr><td className="p-2 text-center" colSpan={7}>Kayıt yok</td></tr>
           )}
         </tbody>
       </table>
 
-      <div className="text-xs text-gray-500 mt-2">
-        Kaynak: Reports API v3.6 • Gün: {date}
-      </div>
+      <div className="text-xs text-gray-500 mt-2">Kaynak: Reports API v3.6 • Gün: {date}</div>
     </div>
   );
 }
