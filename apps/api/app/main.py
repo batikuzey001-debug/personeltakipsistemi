@@ -56,6 +56,14 @@ try:
 except Exception as e:
     print(f"[livechat-report] router not loaded: {e}")
 
+# ⬇️ LIVECHAT SUPERVISE router (opsiyonel)
+_livechat_supervise_router = None
+try:
+    from app.api.routes_livechat_supervise import router as livechat_supervise_router
+    _livechat_supervise_router = livechat_supervise_router
+except Exception as e:
+    print(f"[livechat-supervise] router not loaded: {e}")
+
 # Scheduler
 from app.scheduler.admin_tasks_jobs import start_scheduler
 
@@ -219,3 +227,9 @@ if _livechat_report_router:
     app.include_router(_livechat_report_router)  # /report/*
 else:
     print("[livechat-report] router missing")
+
+if _livechat_supervise_router:
+    print("[livechat-supervise] router included at /report")
+    app.include_router(_livechat_supervise_router)  # /report/supervise
+else:
+    print("[livechat-supervise] router missing")
