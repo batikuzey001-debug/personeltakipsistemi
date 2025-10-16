@@ -13,13 +13,13 @@ type Row = {
   csat_good?: number | null;
   csat_bad?: number | null;
   csat_total?: number | null;
-
-  // yeni alanlar
   logged_in_hours?: number;
   accepting_hours?: number;
   not_accepting_hours?: number;
   chatting_hours?: number;
   transfer_out?: number;
+  supervised_chats?: number;
+  internal_msg_count?: number;
 };
 
 function fmtSec(v: number | null | undefined) {
@@ -40,7 +40,7 @@ export default function LivechatAgentReport() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [q, setQ] = useState(""); // e-posta arama
+  const [q, setQ] = useState("");
 
   const load = async () => {
     setLoading(true); setErr(null);
@@ -56,7 +56,7 @@ export default function LivechatAgentReport() {
     }
   };
 
-  useEffect(() => { load(); /* ilk yük */ }, []);
+  useEffect(() => { load(); }, []);
 
   const filtered = useMemo(() => {
     const f = (rows || []).filter(x =>
@@ -99,6 +99,8 @@ export default function LivechatAgentReport() {
             <th className="p-2 text-center">Not-accepting h</th>
             <th className="p-2 text-center">Chatting h</th>
             <th className="p-2 text-center">Transfer-out</th>
+            <th className="p-2 text-center">Supervise</th>
+            <th className="p-2 text-center">İç yazışma</th>
           </tr>
         </thead>
         <tbody>
@@ -120,15 +122,19 @@ export default function LivechatAgentReport() {
               <td className="p-2 text-center">{fmtH(r.not_accepting_hours)}</td>
               <td className="p-2 text-center">{fmtH(r.chatting_hours)}</td>
               <td className="p-2 text-center">{r.transfer_out ?? 0}</td>
+              <td className="p-2 text-center">{r.supervised_chats ?? 0}</td>
+              <td className="p-2 text-center">{r.internal_msg_count ?? 0}</td>
             </tr>
           ))}
           {!loading && !err && filtered.length === 0 && (
-            <tr><td className="p-2 text-center" colSpan={12}>Kayıt yok</td></tr>
+            <tr><td className="p-2 text-center" colSpan={14}>Kayıt yok</td></tr>
           )}
         </tbody>
       </table>
 
-      <div className="text-xs text-gray-500 mt-2">Kaynak: Reports API v3.6 • Gün: {date}</div>
+      <div className="text-xs text-gray-500 mt-2">
+        Kaynak: Reports API v3.6 + Chat Summary v3.5 • Gün: {date}
+      </div>
     </div>
   );
 }
