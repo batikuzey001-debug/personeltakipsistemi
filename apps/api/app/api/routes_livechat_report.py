@@ -7,7 +7,11 @@ B64 = os.getenv("TEXT_BASE64_TOKEN", "")
 if not B64:
     raise HTTPException(401, "TEXT_BASE64_TOKEN missing")
 
-HDR = {"Authorization": f"Basic {B64}", "Content-Type": "application/json", "X-API-Version": "3.6"}
+HDR = {
+    "Authorization": f"Basic {B64}",
+    "Content-Type": "application/json",
+    "X-API-Version": "3.6",
+}
 
 router = APIRouter(prefix="/report", tags=["livechat-report"])
 
@@ -29,25 +33,27 @@ async def _agent_art(c: httpx.AsyncClient, fr: str, to: str, email: str) -> floa
 async def daily_summary(date: str = Query(..., description="YYYY-MM-DD (tek gün)")):
     fr, to = _day(date)
     async with httpx.AsyncClient(timeout=60) as c:
-        # performans
+        # 1) Ajan performansı (chats_count, frt, süreler)
         pb = {"distribution": "day", "filters": {"from": fr, "to": to}}
         r1 = await c.post(f"{LC}/reports/agents/performance", headers=HDR, json=pb)
         r1.raise_for_status()
         perf = r1.json().get("records", {})  # {email:{...}}
 
-        # rating
+        # 2) Rating sayıları (good/bad/total)
         rb = {"filters": {"from": fr, "to": to}}
         r2 = await c.post(f"{LC}/reports/chats/ranking", headers=HDR, json=rb)
         r2.raise_for_status()
         rank = r2.json().get("records", {})
 
-        # transfer_out (ajan bazlı)
+        # 3) Transfer-out (ajan bazlı)
         transfer_out = {}
         for email in perf.keys():
             q = {
-                "filters.from": fr, "filters.to": to,
+                "filters.from": fr,
+                "filters.to": to,
                 "filters.event_types.values": "chat_transferred",
-                "filters.agents.values": email, "distribution": "day",
+                "filters.agents.values": email,
+                "distribution": "day",
             }
             r4 = await c.get(f"{LC}/reports/chats/total_chats", headers=HDR, params=q)
             if r4.status_code == 200:
@@ -56,11 +62,12 @@ async def daily_summary(date: str = Query(..., description="YYYY-MM-DD (tek gün
             else:
                 transfer_out[email] = 0
 
-        # ajan bazlı ART
+        # 4) Ajan bazlı ART
         art_map = {}
         for email in perf.keys():
             art_map[email] = await _agent_art(c, fr, to, email)
 
+    # Birleşik çıktı
     rows = []
     for email, p in perf.items():
         chats = int(p.get("chats_count") or 0)
@@ -70,6 +77,7 @@ async def daily_summary(date: str = Query(..., description="YYYY-MM-DD (tek gün
         li = int(p.get("logged_in_time") or 0)
         ac = int(p.get("accepting_chats_time") or 0)
         nac = int(p.get("not_accepting_chats_time") or 0)
+
         rr = rank.get(email, {})
         good, bad, tot = rr.get("good"), rr.get("bad"), rr.get("total")
         csat = (good / tot * 100) if (isinstance(good, (int, float)) and isinstance(tot, (int, float)) and tot) else None
@@ -80,14 +88,15 @@ async def daily_summary(date: str = Query(..., description="YYYY-MM-DD (tek gün
             "first_response_time_sec": frt,
             "avg_response_time_sec": art_map.get(email),
             "avg_handle_time_sec": aht,
-            "csat_good": good, "csat_bad": bad, "csat_total": tot,
+            "csat_good": good,
+            "csat_bad": bad,
+            "csat_total": tot,
             "csat_percent": round(csat, 2) if csat is not None else None,
             "logged_in_hours": round(li / 3600, 2) if li else 0,
             "accepting_hours": round(ac / 3600, 2) if ac else 0,
             "not_accepting_hours": round(nac / 3600, 2) if nac else 0,
             "chatting_hours": round(chat_sec / 3600, 2) if chat_sec else 0,
             "transfer_out": transfer_out.get(email, 0),
-            # supervise/internal kaldırıldı
         })
 
     return {"date": date[:10], "count": len(rows), "rows": rows}
