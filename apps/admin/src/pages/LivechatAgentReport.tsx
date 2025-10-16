@@ -1,67 +1,131 @@
 // apps/admin/src/pages/LivechatAgentReport.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
 const API = import.meta.env.VITE_API_BASE_URL as string;
 
+function fmtSec(v: number | null | undefined) {
+  if (v == null || isNaN(v as number)) return "-";
+  const s = Math.round(Number(v));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r.toString().padStart(2, "0")}`;
+}
+
+type Row = {
+  agent_email: string;
+  total_chats: number;
+  first_response_time_sec: number | null;
+  avg_handle_time_sec: number | null;
+  csat_percent: number | null;
+  csat_good?: number | null;
+  csat_bad?: number | null;
+  csat_total?: number | null;
+};
+
 export default function LivechatAgentReport() {
-  const [from, setFrom] = useState(new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10));
-  const [to, setTo] = useState(new Date().toISOString().slice(0, 10));
-  const [rows, setRows] = useState<any[]>([]);
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [q, setQ] = useState(""); // arama (e-posta)
 
   const load = async () => {
-    setLoading(true); setErr(null);
+    setLoading(true);
+    setErr(null);
     try {
-      const r = await fetch(`${API}/report/agents/summary?date_from=${from}&date_to=${to}`);
+      const r = await fetch(`${API}/report/daily?date=${date}`);
       if (!r.ok) throw new Error(await r.text());
       const j = await r.json();
       setRows(j.rows || []);
-    } catch (e:any) {
-      setErr(e.message || "Hata");
+    } catch (e: any) {
+      setErr(e?.message || "Hata");
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const filtered = useMemo(() => {
+    const f = (rows || []).filter((x) =>
+      q ? x.agent_email.toLowerCase().includes(q.toLowerCase()) : true
+    );
+    // toplam chate göre azalan
+    return f.sort((a, b) => (b.total_chats || 0) - (a.total_chats || 0));
+  }, [rows, q]);
 
   return (
     <div className="p-4">
-      <h1 className="text-xl font-semibold mb-3">Rapor • Canlı Destek</h1>
-      <div className="flex gap-2 mb-3">
-        <input type="date" value={from} onChange={e=>setFrom(e.target.value)} className="border px-2 py-1"/>
-        <input type="date" value={to} onChange={e=>setTo(e.target.value)} className="border px-2 py-1"/>
-        <button onClick={load} className="border px-3 py-1">Yenile</button>
+      <h1 className="text-xl font-semibold mb-3">Rapor • Canlı Destek (Günlük)</h1>
+
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="border px-2 py-1"
+        />
+        <button onClick={load} className="border px-3 py-1">
+          Yenile
+        </button>
+        <input
+          placeholder="E-posta ara"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          className="border px-2 py-1 ml-auto"
+          style={{ minWidth: 220 }}
+        />
       </div>
+
       {loading && <div>Yükleniyor…</div>}
-      {err && <div style={{color:"#b91c1c"}}>Hata: {err}</div>}
+      {err && (
+        <div style={{ color: "#b91c1c" }} className="mb-2">
+          Hata: {err}
+        </div>
+      )}
+
       <table className="w-full text-sm border">
         <thead className="bg-gray-100">
           <tr>
-            <th className="p-2 text-left">Agent</th>
-            <th className="p-2">Chat</th>
-            <th className="p-2">FRT (sn)</th>
-            <th className="p-2">ART (sn)</th>
-            <th className="p-2">AHT (sn)</th>
-            <th className="p-2">CSAT</th>
+            <th className="p-2 text-left">Agent (e-posta)</th>
+            <th className="p-2 text-center">Chat</th>
+            <th className="p-2 text-center">FRT</th>
+            <th className="p-2 text-center">AHT</th>
+            <th className="p-2 text-center">CSAT %</th>
+            <th className="p-2 text-center">İyi/Kötü</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r:any)=>(
-            <tr key={r.agent_id} className="border-t">
-              <td className="p-2">{r.name || r.agent_id}</td>
-              <td className="p-2 text-center">{r.total_chats ?? "-"}</td>
-              <td className="p-2 text-center">{r.first_response_time_sec ?? "-"}</td>
-              <td className="p-2 text-center">{r.avg_response_time_sec ?? "-"}</td>
-              <td className="p-2 text-center">{r.avg_handle_time_sec ?? "-"}</td>
-              <td className="p-2 text-center">{r.csat_avg?.toFixed?.(2) ?? "-"}</td>
+          {filtered.map((r) => (
+            <tr key={r.agent_email} className="border-t">
+              <td className="p-2">{r.agent_email}</td>
+              <td className="p-2 text-center">{r.total_chats ?? 0}</td>
+              <td className="p-2 text-center">{fmtSec(r.first_response_time_sec)}</td>
+              <td className="p-2 text-center">{fmtSec(r.avg_handle_time_sec)}</td>
+              <td className="p-2 text-center">
+                {r.csat_percent != null ? `${r.csat_percent.toFixed(2)}%` : "-"}
+              </td>
+              <td className="p-2 text-center">
+                {r.csat_good ?? 0}/{r.csat_bad ?? 0}
+              </td>
             </tr>
           ))}
-          {!loading && !err && rows.length===0 && (
-            <tr><td className="p-2 text-center" colSpan={6}>Kayıt yok</td></tr>
+          {!loading && !err && filtered.length === 0 && (
+            <tr>
+              <td className="p-2 text-center" colSpan={6}>
+                Kayıt yok
+              </td>
+            </tr>
           )}
         </tbody>
       </table>
+
+      <div className="text-xs text-gray-500 mt-2">
+        Kaynak: Reports API v3.6 • Gün: {date}
+      </div>
     </div>
   );
 }
