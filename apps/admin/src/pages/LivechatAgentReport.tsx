@@ -6,13 +6,20 @@ const API = import.meta.env.VITE_API_BASE_URL as string;
 type Row = {
   agent_email: string;
   total_chats: number;
-  first_response_time_sec: number | null;
-  avg_response_time_sec: number | null;   // ART
-  avg_handle_time_sec: number | null;     // AHT
+  first_response_time_sec: number | null;  // FRT
+  avg_response_time_sec: number | null;    // ART (gün geneli)
+  avg_handle_time_sec: number | null;      // AHT
   csat_percent: number | null;
   csat_good?: number | null;
   csat_bad?: number | null;
   csat_total?: number | null;
+
+  // yeni alanlar
+  logged_in_hours?: number;
+  accepting_hours?: number;
+  not_accepting_hours?: number;
+  chatting_hours?: number;
+  transfer_out?: number;
 };
 
 function fmtSec(v: number | null | undefined) {
@@ -21,6 +28,11 @@ function fmtSec(v: number | null | undefined) {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return `${m}:${r.toString().padStart(2, "0")}`;
+}
+
+function fmtH(v?: number | null) {
+  if (v == null || isNaN(v as number)) return "-";
+  return Number(v).toFixed(2);
 }
 
 export default function LivechatAgentReport() {
@@ -82,6 +94,11 @@ export default function LivechatAgentReport() {
             <th className="p-2 text-center">AHT</th>
             <th className="p-2 text-center">CSAT %</th>
             <th className="p-2 text-center">İyi/Kötü</th>
+            <th className="p-2 text-center">Online h</th>
+            <th className="p-2 text-center">Accepting h</th>
+            <th className="p-2 text-center">Not-accepting h</th>
+            <th className="p-2 text-center">Chatting h</th>
+            <th className="p-2 text-center">Transfer-out</th>
           </tr>
         </thead>
         <tbody>
@@ -98,10 +115,15 @@ export default function LivechatAgentReport() {
               <td className="p-2 text-center">
                 {(r.csat_good ?? 0)}/{(r.csat_bad ?? 0)}
               </td>
+              <td className="p-2 text-center">{fmtH(r.logged_in_hours)}</td>
+              <td className="p-2 text-center">{fmtH(r.accepting_hours)}</td>
+              <td className="p-2 text-center">{fmtH(r.not_accepting_hours)}</td>
+              <td className="p-2 text-center">{fmtH(r.chatting_hours)}</td>
+              <td className="p-2 text-center">{r.transfer_out ?? 0}</td>
             </tr>
           ))}
           {!loading && !err && filtered.length === 0 && (
-            <tr><td className="p-2 text-center" colSpan={7}>Kayıt yok</td></tr>
+            <tr><td className="p-2 text-center" colSpan={12}>Kayıt yok</td></tr>
           )}
         </tbody>
       </table>
