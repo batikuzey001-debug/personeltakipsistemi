@@ -2,62 +2,59 @@
 import os, httpx
 from fastapi import APIRouter, HTTPException, Query
 
-REPORTS = "https://reports.livechat.com/v2"
+LC = "https://api.livechatinc.com/v3.6"
 B64 = os.getenv("TEXT_BASE64_TOKEN", "")
 if not B64:
     raise HTTPException(401, "TEXT_BASE64_TOKEN missing")
 
-HDR = {"Authorization": f"Basic {B64}", "Accept": "application/json"}
+HDR = {"Authorization": f"Basic {B64}", "Content-Type": "application/json"}
 
 router = APIRouter(prefix="/report", tags=["livechat-report"])
 
-def _d(s: str) -> str:
-    return s[:10]
-
-async def _agents_report(c: httpx.AsyncClient, day: str):
-    # Günlük per-agent: from=to=aynı gün
-    url = f"{REPORTS}/agents?from={day}&to={day}"
-    r = await c.get(url, headers=HDR, timeout=60)
-    if r.status_code != 200:
-        raise HTTPException(r.status_code, f"agents report error: {r.text}")
-    # Beklenen alanlar: id/email, chats_total, first_response_time_avg, response_time_avg, handle_time_avg
-    return r.json().get("agents") or r.json().get("data") or []
-
-async def _surveys(c: httpx.AsyncClient, day: str):
-    url = f"{REPORTS}/surveys?from={day}&to={day}"
-    r = await c.get(url, headers=HDR, timeout=60)
-    if r.status_code != 200:
-        # CSAT yoksa raporu kesmeyelim
-        return []
-    items = r.json().get("items") or r.json().get("surveys") or []
-    # agent_email -> (sum, cnt)
-    acc = {}
-    for s in items:
-        aid = s.get("agent_id") or (s.get("agent") or {}).get("id")
-        score = s.get("score") or s.get("rating")
-        if not aid or not isinstance(score, (int, float)):
-            continue
-        v = acc.setdefault(aid, [0.0, 0])
-        v[0] += float(score); v[1] += 1
-    return {k: (v[0] / v[1]) for k, v in acc.items() if v[1]}
+def _day(d: str) -> tuple[str, str]:
+    d = d[:10]
+    return f"{d}T00:00:00Z", f"{d}T23:59:59Z"
 
 @router.get("/daily")
-async def daily_summary(date: str = Query(..., description="YYYY-MM-DD (gün sonu raporu)")):
-    day = _d(date)
-    async with httpx.AsyncClient() as c:
-        agents = await _agents_report(c, day)
-        csat_map = await _surveys(c, day)
+async def daily_summary(
+    date: str = Query(..., description="YYYY-MM-DD (tek gün)"),
+):
+    f, t = _day(date)
+    async with httpx.AsyncClient(timeout=60) as c:
+        # 1) Kişi bazlı performans (günlük dağıtım)
+        perf_body = {"distribution": "day", "filters": {"from": f, "to": t}}
+        r1 = await c.post(f"{LC}/reports/agents/performance", headers=HDR, json=perf_body)
+        if r1.status_code != 200:
+            raise HTTPException(r1.status_code, f"agents/performance: {r1.text}")
+        perf = r1.json().get("records", {})  # { "agent@email": {...} }
+
+        # 2) Kişi bazlı rating sayıları (aynı gün)
+        rank_body = {"filters": {"from": f, "to": t}}
+        r2 = await c.post(f"{LC}/reports/chats/ranking", headers=HDR, json=rank_body)
+        if r2.status_code != 200:
+            raise HTTPException(r2.status_code, f"chats/ranking: {r2.text}")
+        rank = r2.json().get("records", {})  # { email: {total, good, bad, score} }
 
     rows = []
-    for a in agents:
-        aid = a.get("id") or a.get("agent_id")  # e-posta kimliği
+    for email, p in perf.items():
+        chats = int(p.get("chats_count", 0) or 0)
+        frt = p.get("first_response_time")            # sn
+        chat_sec = p.get("chatting_time")             # toplam chat süresi (sn)
+        aht = (chat_sec / chats) if chats else None   # ort. handle time ≈ chatting_time / chats
+        r = rank.get(email, {})
+        good, bad, tot = r.get("good"), r.get("bad"), r.get("total")
+        csat = (good / tot * 100) if (isinstance(good, (int,float)) and isinstance(tot, (int,float)) and tot) else None
+
         rows.append({
-            "agent_email": aid,
-            "total_chats": a.get("chats_total") or a.get("chats") or 0,
-            "frt_sec":     a.get("first_response_time_avg") or a.get("frt_avg"),
-            "art_sec":     a.get("response_time_avg") or a.get("art_avg"),
-            "aht_sec":     a.get("handle_time_avg") or a.get("aht_avg"),
-            "csat_avg":    csat_map.get(aid)
+            "agent_email": email,
+            "total_chats": chats,
+            "first_response_time_sec": frt,
+            "avg_response_time_sec": None,     # v3.6 per-agent yok; gerekirse ek uçla tahminleriz
+            "avg_handle_time_sec": aht,
+            "csat_good": good,
+            "csat_bad": bad,
+            "csat_total": tot,
+            "csat_percent": round(csat, 2) if csat is not None else None,
         })
 
-    return {"date": day, "count": len(rows), "rows": rows}
+    return {"date": date[:10], "count": len(rows), "rows": rows}
