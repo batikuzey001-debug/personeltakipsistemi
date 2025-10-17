@@ -1,6 +1,4 @@
-// =============================
-// 1) apps/admin/src/pages/LivechatMissed.tsx
-// =============================
+// apps/admin/src/pages/LivechatMissed.tsx
 import { useEffect, useMemo, useState } from "react";
 
 const API = import.meta.env.VITE_API_BASE_URL as string;
@@ -154,19 +152,3 @@ export default function LivechatMissed() {
     </div>
   );
 }
-
-// =============================
-// 2) apps/admin/src/App.tsx  → route ekleyin
-// =============================
-// import satırlarına ekleyin:
-import LivechatMissed from "./pages/LivechatMissed";
-
-// <Routes> içinde uygun yere ekleyin (Protected + Layout ile):
-// <Route path="/livechat/missed" element={<Protected><Layout><LivechatMissed /></Layout></Protected>} />
-
-// =============================
-// 3) apps/admin/src/components/Sidebar.tsx  → menüye ekleyin
-// =============================
-// base/adminOnly dizilerine uygun bir yere ekleyin:
-{ /* Örn. adminOnly dizisine: */ }
-// { to: "/livechat/missed", label: "Canlı Destek • Missed" }
