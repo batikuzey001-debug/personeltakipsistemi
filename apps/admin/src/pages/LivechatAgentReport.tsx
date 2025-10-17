@@ -1,22 +1,25 @@
 // apps/admin/src/pages/LivechatAgentReport.tsx
 import { useEffect, useMemo, useState } from "react";
+
 const API = import.meta.env.VITE_API_BASE_URL as string;
 
 type Row = {
   agent_email: string;
   total_chats: number;
   first_response_time_sec: number | null;
-  avg_response_time_sec: number | null;
-  avg_handle_time_sec: number | null;
+  avg_response_time_sec: number | null;   // ART
+  avg_handle_time_sec: number | null;     // AHT
   csat_percent: number | null;
   csat_good?: number | null;
   csat_bad?: number | null;
   csat_total?: number | null;
-  logged_in_hours?: number;
-  accepting_hours?: number;
-  not_accepting_hours?: number;
-  chatting_hours?: number;
-  transfer_out?: number;
+  logged_in_hours?: number | null;
+  accepting_hours?: number | null;
+  not_accepting_hours?: number | null;
+  chatting_hours?: number | null;
+  transfer_out?: number | null;
+  missed_chats?: number | null;
+  auto_transfer?: number | null;
 };
 
 function fmtSec(v: number | null | undefined) {
@@ -26,7 +29,6 @@ function fmtSec(v: number | null | undefined) {
   const r = s % 60;
   return `${m}:${r.toString().padStart(2, "0")}`;
 }
-function fmtH(v?: number | null) { if (v == null || isNaN(v as number)) return "-"; return Number(v).toFixed(2); }
 
 export default function LivechatAgentReport() {
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -42,12 +44,19 @@ export default function LivechatAgentReport() {
       if (!r.ok) throw new Error(await r.text());
       const j = await r.json();
       setRows((j?.rows || []) as Row[]);
-    } catch (e: any) { setErr(e?.message || "Hata"); } finally { setLoading(false); }
+    } catch (e: any) {
+      setErr(e?.message || "Hata");
+    } finally {
+      setLoading(false);
+    }
   };
-  useEffect(() => { load(); }, []);
+
+  useEffect(() => { load(); /* ilk yük */ }, []);
 
   const filtered = useMemo(() => {
-    const f = (rows || []).filter(x => q ? x.agent_email.toLowerCase().includes(q.toLowerCase()) : true);
+    const f = (rows || []).filter(x =>
+      q ? x.agent_email.toLowerCase().includes(q.toLowerCase()) : true
+    );
     return f.sort((a, b) => (b.total_chats || 0) - (a.total_chats || 0));
   }, [rows, q]);
 
@@ -58,8 +67,13 @@ export default function LivechatAgentReport() {
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <input type="date" value={date} onChange={e=>setDate(e.target.value)} className="border px-2 py-1"/>
         <button onClick={load} className="border px-3 py-1">Yenile</button>
-        <input placeholder="E-posta ara" value={q} onChange={e=>setQ(e.target.value)}
-               className="border px-2 py-1 ml-auto" style={{minWidth:220}}/>
+        <input
+          placeholder="E-posta ara"
+          value={q}
+          onChange={e=>setQ(e.target.value)}
+          className="border px-2 py-1 ml-auto"
+          style={{minWidth:220}}
+        />
       </div>
 
       {loading && <div>Yükleniyor…</div>}
@@ -75,11 +89,8 @@ export default function LivechatAgentReport() {
             <th className="p-2 text-center">AHT</th>
             <th className="p-2 text-center">CSAT %</th>
             <th className="p-2 text-center">İyi/Kötü</th>
-            <th className="p-2 text-center">Online h</th>
-            <th className="p-2 text-center">Accepting h</th>
-            <th className="p-2 text-center">Not-accepting h</th>
-            <th className="p-2 text-center">Chatting h</th>
-            <th className="p-2 text-center">Transfer-out</th>
+            <th className="p-2 text-center">Missed</th>
+            <th className="p-2 text-center">Auto Transfer</th>
           </tr>
         </thead>
         <tbody>
@@ -90,22 +101,25 @@ export default function LivechatAgentReport() {
               <td className="p-2 text-center">{fmtSec(r.first_response_time_sec)}</td>
               <td className="p-2 text-center">{fmtSec(r.avg_response_time_sec)}</td>
               <td className="p-2 text-center">{fmtSec(r.avg_handle_time_sec)}</td>
-              <td className="p-2 text-center">{r.csat_percent != null ? `${r.csat_percent.toFixed(2)}%` : "-"}</td>
-              <td className="p-2 text-center">{(r.csat_good ?? 0)}/{(r.csat_bad ?? 0)}</td>
-              <td className="p-2 text-center">{fmtH(r.logged_in_hours)}</td>
-              <td className="p-2 text-center">{fmtH(r.accepting_hours)}</td>
-              <td className="p-2 text-center">{fmtH(r.not_accepting_hours)}</td>
-              <td className="p-2 text-center">{fmtH(r.chatting_hours)}</td>
-              <td className="p-2 text-center">{r.transfer_out ?? 0}</td>
+              <td className="p-2 text-center">
+                {r.csat_percent != null ? `${r.csat_percent.toFixed(2)}%` : "-"}
+              </td>
+              <td className="p-2 text-center">
+                {(r.csat_good ?? 0)}/{(r.csat_bad ?? 0)}
+              </td>
+              <td className="p-2 text-center">{r.missed_chats ?? 0}</td>
+              <td className="p-2 text-center">{r.auto_transfer ?? 0}</td>
             </tr>
           ))}
           {!loading && !err && filtered.length === 0 && (
-            <tr><td className="p-2 text-center" colSpan={12}>Kayıt yok</td></tr>
+            <tr><td className="p-2 text-center" colSpan={9}>Kayıt yok</td></tr>
           )}
         </tbody>
       </table>
 
-      <div className="text-xs text-gray-500 mt-2">Kaynak: Reports API v3.6 • Gün: {date}</div>
+      <div className="text-xs text-gray-500 mt-2">
+        Kaynak: Reports API v3.6 • Gün: {date}
+      </div>
     </div>
   );
 }
