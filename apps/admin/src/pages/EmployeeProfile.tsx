@@ -401,9 +401,7 @@ export default function EmployeeProfile() {
                 </tr>
               ))}
               {act.length === 0 && (
-                <tr>
-                  <td colSpan={5} style={{ padding: 12, color: "#777" }}>Kayıt yok.</td>
-                </tr>
+                <tr><td colSpan={5} style={{ padding: 12, color: "#777" }}>Kayıt yok.</td></tr>
               )}
             </tbody>
           </table>
@@ -412,7 +410,7 @@ export default function EmployeeProfile() {
 
       {/* GÜNLÜK METRİKLER (legacy) */}
       {tab === "daily" && (
-        <div style={{ border: "1px solid "#eee", borderRadius: 12, overflow: "hidden", background: "#fff" }}>
+        <div style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden", background: "#fff" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "#fafafa" }}>
