@@ -17,8 +17,9 @@ import AdminTasks from "./pages/AdminTasks";
 import AdminTaskTemplates from "./pages/AdminTaskTemplates";
 import AdminBotSettings from "./pages/AdminBotSettings";
 import Notifications from "./pages/Notifications";
-import ShiftPlanner from "./pages/ShiftPlanner"; // planlayıcı kaldı
-import LivechatAgentReport from "./pages/LivechatAgentReport"; // ✅ yeni
+import ShiftPlanner from "./pages/ShiftPlanner";
+import LivechatAgentReport from "./pages/LivechatAgentReport";
+import LivechatMissed from "./pages/LivechatMissed";
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
   constructor(props: { children: React.ReactNode }) { super(props); this.state = { hasError: false }; }
@@ -58,12 +59,11 @@ export default function App() {
         <Route path="/employees/:employee_id" element={<Protected><Layout><EmployeeProfile /></Layout></Protected>} />
 
         <Route path="/reports/daily" element={<Protected><Layout><ReportsDaily /></Layout></Protected>} />
-        <Route path="/reports/livechat" element={<Protected><Layout><LivechatAgentReport /></Layout></Protected>} /> {/* ✅ yeni rota */}
+        <Route path="/reports/livechat" element={<Protected><Layout><LivechatAgentReport /></Layout></Protected>} />
+        <Route path="/livechat/missed" element={<Protected><Layout><LivechatMissed /></Layout></Protected>} />
 
         <Route path="/admin/tasks" element={<Protected><Layout><AdminTasks /></Layout></Protected>} />
         <Route path="/admin/tasks/templates" element={<Protected><Layout><AdminTaskTemplates /></Layout></Protected>} />
-
-        {/* Yalnız Shift Planlama */}
         <Route path="/shift-planner" element={<Protected><Layout><ShiftPlanner /></Layout></Protected>} />
 
         <Route path="/admin/bot" element={<Protected><Layout><AdminBotSettings /></Layout></Protected>} />
