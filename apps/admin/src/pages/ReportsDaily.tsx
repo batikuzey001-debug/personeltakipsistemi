@@ -1,254 +1,130 @@
 // apps/admin/src/pages/ReportsDaily.tsx
-// YALNIZCA AŞAĞIDAKİ DEĞİŞİKLİKLER: apiChannel map'i ve iki yerde path kullanımı
-
 import React, { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
+import { api, ApiListResponse } from "../lib/api";
+import Table, { Column } from "../components/Table";
+import ExportCSVButton from "../components/ExportCSVButton";
+import Loading from "../components/Loading";
+import Alert from "../components/Alert";
+import { useColumnVisibility, ColumnVisibilityControls } from "../components/ColumnVisibility";
 
-const API =
-  (import.meta.env.VITE_API_BASE_URL as string) ||
-  "https://personel-takip-api-production.up.railway.app";
-
-type Channel = "bonus" | "finans";
-
-type Trend = { emoji: string; pct: number | null; team_avg_close_sec: number | null };
-type Row = {
-  employee_id: string;
-  full_name: string;
-  department: string;
-  count_total: number;
-  avg_first_sec: number | null;
-  avg_close_sec: number;
-  trend: Trend;
+type DailyRow = {
+  date?: string;
+  dept?: string;
+  employee_code?: string;
+  employee_name?: string;
+  total?: number;
+  avg_first_sec?: number;
+  avg_close_sec?: number;
+  trend?: number;
+  [k: string]: any;
 };
 
-function todayYmdLocal(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-function addDays(ymd: string, days: number): string {
-  const [y, m, d] = ymd.split("-").map(Number);
-  const dt = new Date(y, (m as number) - 1, d + days);
-  const yy = dt.getFullYear();
-  const mm = String(dt.getMonth() + 1).padStart(2, "0");
-  const dd = String(dt.getDate()).padStart(2, "0");
-  return `${yy}-${mm}-${dd}`;
-}
-function fmtMMSS(sec: number | null) {
-  if (sec === null || sec === undefined) return "—";
-  const s = Math.max(0, Math.round(sec));
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
-}
-async function apiGet<T>(path: string): Promise<T> {
-  const token = localStorage.getItem("token") || "";
-  const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!r.ok) throw new Error(await r.text());
-  return (await r.json()) as T;
+const PATH = "/reports/daily";
+
+function useQueryDefaults() {
+  const [params, setParams] = useSearchParams();
+  const today = useMemo(() => new Date(), []);
+  const toStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  const defaultFrom = useMemo(() => { const a = new Date(today); a.setDate(a.getDate() - 6); return toStr(a); }, [today]);
+  const defaultTo = useMemo(() => toStr(today), [today]);
+  const from = params.get("from") || defaultFrom;
+  const to = params.get("to") || defaultTo;
+  const order = params.get("order") || "-total";
+  const limit = Number(params.get("limit") || 50);
+  const offset = Number(params.get("offset") || 0);
+  const set = (patch: Record<string, string | number | undefined>) => {
+    const next = new URLSearchParams(params);
+    Object.entries(patch).forEach(([k, v]) => (v == null || v === "") ? next.delete(k) : next.set(k, String(v)));
+    setParams(next, { replace: true });
+  };
+  return { from, to, order, limit, offset, set };
 }
 
 export default function ReportsDaily() {
-  const [channel, setChannel] = useState<Channel>("finans");
-  const [from, setFrom] = useState<string>(todayYmdLocal());
-  const [to, setTo] = useState<string>(addDays(todayYmdLocal(), 1)); // exclusive
-  const [order, setOrder] = useState<"avg_asc" | "avg_desc" | "cnt_desc">("cnt_desc");
-  const [minKt, setMinKt] = useState<number>(5);
-  const [onlyDept, setOnlyDept] = useState<boolean>(true);
-  const [rows, setRows] = useState<Row[]>([]);
+  const { from, to, order, limit, offset, set } = useQueryDefaults();
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  // 👇 BACKEND YOLU İÇİN KANAL MAPİNGİ
-  const apiChannel = channel === "finans" ? "finance" : "bonus";
-
-  async function load() {
-    setErr(null);
-    setLoading(true);
-    try {
-      const qs = new URLSearchParams();
-      qs.set("frm", from);
-      qs.set("to", to);
-      qs.set("order", order);
-      qs.set("limit", "200");
-      if (channel === "finans") qs.set("min_kt", String(minKt));
-
-      // 👇 HATA DÜZELTME: burada `apiChannel` kullanıyoruz
-      const path = `/reports/${apiChannel}/close-time?${qs.toString()}`;
-      let data = await apiGet<Row[]>(path);
-
-      if (onlyDept) {
-        const required = channel === "finans" ? "Finans" : "Bonus";
-        data = data.filter((r) => (r.department || "").toLowerCase() === required.toLowerCase());
-      }
-
-      setRows(data);
-    } catch (e: any) {
-      setErr(e?.message || "Rapor alınamadı");
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [data, setData] = useState<ApiListResponse<DailyRow> | null>(null);
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel]);
+    let mounted = true;
+    setLoading(true); setErr(null);
+    api.get<ApiListResponse<DailyRow>>(PATH, { from, to, order, limit, offset, tz: "Europe/Istanbul" })
+      .then((resp) => mounted && setData(resp))
+      .catch((e) => mounted && setErr(e?.message || "Hata"))
+      .finally(() => mounted && setLoading(false));
+    return () => { mounted = false; };
+  }, [from, to, order, limit, offset]);
 
-  const kpi = useMemo(() => {
-    const total = rows.reduce((a, r) => a + (r.count_total || 0), 0);
-    const sumClose = rows.reduce((a, r) => a + (r.avg_close_sec || 0) * (r.count_total || 0), 0);
-    const sumFirst = rows.reduce((a, r) => a + ((r.avg_first_sec ?? 0) * (r.count_total || 0)), 0);
-    const hasFirst = rows.some((r) => r.avg_first_sec != null);
-    const wAvgClose = total ? sumClose / total : null;
-    const wAvgFirst = total && hasFirst ? sumFirst / total : null;
-    const SLA = 900;
-    const slaBreaches = rows.filter((r) => (r.avg_close_sec || 0) > SLA).length;
-    return { total, wAvgClose, wAvgFirst, slaBreaches, slaSec: SLA };
-  }, [rows]);
+  const columns: Column<DailyRow>[] = [
+    { key: "date", header: "Tarih" },
+    { key: "dept", header: "Departman" },
+    { key: "employee_name", header: "Personel" },
+    { key: "employee_code", header: "Kod" },
+    { key: "total", header: "İşlem" },
+    { key: "avg_first_sec", header: "Ø İlk Yanıt", render: (r) => r.avg_first_sec != null ? `${Math.round(r.avg_first_sec)} sn` : "" },
+    { key: "avg_close_sec", header: "Ø Sonuçlandırma", render: (r) => r.avg_close_sec != null ? `${Math.round(r.avg_close_sec)} sn` : "" },
+    { key: "trend", header: "Trend", render: (r) => r.trend != null ? (<span style={{ fontWeight: 700, color: r.trend >= 0 ? "#0a7" : "#c33" }}>{r.trend > 0 ? "+" : ""}{r.trend}</span>) : "" },
+  ];
 
-  // ----- STYLES -----
-  const container: React.CSSProperties = { maxWidth: 1200, margin: "0 auto", padding: 12, display: "grid", gap: 12 };
-  const bar: React.CSSProperties = { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" };
-  const kpis: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(4, minmax(160px, 1fr))", gap: 8 };
-  const card: React.CSSProperties = { border: "1px solid #e9e9e9", borderRadius: 12, background: "#fff", padding: 12 };
-  const tableCard: React.CSSProperties = { border: "1px solid #e9e9e9", borderRadius: 12, background: "#fff", overflow: "hidden" };
-  const th: React.CSSProperties = { position: "sticky", top: 0, background: "#fff", borderBottom: "1px solid #eee", fontWeight: 600, fontSize: 13, padding: "6px 10px", textAlign: "left", whiteSpace: "nowrap" };
-  const tdLeft: React.CSSProperties = { padding: "6px 10px", fontSize: 13, textAlign: "left", verticalAlign: "middle" };
-  const tdRight: React.CSSProperties = { padding: "6px 10px", fontSize: 13, textAlign: "right", verticalAlign: "middle", whiteSpace: "nowrap" };
-  const sub: React.CSSProperties = { fontSize: 11, color: "#666" };
+  const storageKey = "cols:reports:daily";
+  const allKeys = columns.map((c) => String(c.key));
+  const { visible, toggle, showAll, hideAll } = useColumnVisibility(allKeys, storageKey);
+  const visibleColumns = columns.filter((c) => visible[String(c.key)] !== false);
+
+  const rows = data?.rows || [];
+  const total = data?.total || 0;
+  const hasPrev = offset > 0;
+  const hasNext = offset + limit < total;
 
   return (
-    <div style={container}>
-      <h1 style={{ margin: 0, fontSize: 20 }}>Günlük Rapor · {channel === "finans" ? "Finans" : "Bonus"}</h1>
-
-      {/* Filtre / Kontrol barı */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          load();
-        }}
-        style={bar}
-      >
-        <select value={channel} onChange={(e) => setChannel(e.target.value as Channel)} title="Kanal seç">
-          <option value="finans">Finans</option>
-          <option value="bonus">Bonus</option>
-        </select>
-
-        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} title="Başlangıç (bugün)" />
-        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} title="Bitiş (exclusive)" />
-
-        <select value={order} onChange={(e) => setOrder(e.target.value as any)} title="Sıralama">
-          <option value="cnt_desc">İşlem (çoktan aza)</option>
-          <option value="avg_asc">Ø Sonuçlandırma (artan)</option>
-          <option value="avg_desc">Ø Sonuçlandırma (azalan)</option>
-        </select>
-
-        {channel === "finans" && (
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-            min KT
-            <input
-              type="number"
-              min={0}
-              max={1000}
-              value={minKt}
-              onChange={(e) => setMinKt(Math.max(0, Number(e.target.value || 0)))}
-              style={{ width: 70 }}
-              title="En az KT sayısı"
-            />
-          </label>
-        )}
-
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          Yalnız departman
-          <input
-            type="checkbox"
-            checked={onlyDept}
-            onChange={(e) => setOnlyDept(e.target.checked)}
-            title="Kanal ile departman eşleşsin"
-          />
-        </label>
-
-        <button type="submit" disabled={loading}>
-          {loading ? "Yükleniyor…" : "Listele"}
-        </button>
-
-        {err && <span style={{ color: "#b00020", fontSize: 12 }}>{err}</span>}
-      </form>
-
-      {/* KPI bar */}
-      <div style={kpis}>
-        <div style={card}>
-          <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>Toplam Kapanış</div>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>{kpi.total}</div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>Ø Sonuçlandırma</div>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>{fmtMMSS(kpi.wAvgClose)}</div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>Ø İlk Yanıt</div>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>{fmtMMSS(kpi.wAvgFirst)}</div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>SLA İhlali (&gt;{kpi.slaSec}s)</div>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>{kpi.slaBreaches}</div>
-        </div>
+    <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+        <strong>Aralık:</strong><span>{from} → {to}</span>
+        <div style={{ flex: 1 }} />
+        <ColumnVisibilityControls
+          columns={columns.map((c) => ({ key: String(c.key), header: c.header }))}
+          visible={visible}
+          toggle={toggle}
+          showAll={showAll}
+          hideAll={hideAll}
+        />
+        <ExportCSVButton filename={`gunluk-rapor_${from}_${to}`} rows={rows} />
       </div>
 
-      {/* Liste */}
-      <div style={tableCard}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th style={{ ...th, width: 360 }}>Personel</th>
-              <th style={{ ...th, width: 120, textAlign: "right" }}>İşlem</th>
-              <th style={{ ...th, width: 160, textAlign: "right" }}>Ø İlk Yanıt</th>
-              <th style={{ ...th, width: 180, textAlign: "right" }}>Ø Sonuçlandırma</th>
-              <th style={{ ...th, width: 160 }}>Trend (7g)</th>
-              <th style={{ ...th, width: 120 }}>Kişi</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={`${r.employee_id}-${i}`} style={{ borderTop: "1px solid #f5f5f5", background: i % 2 ? "#fafafa" : "#fff" }}>
-                <td style={tdLeft}>
-                  <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {r.full_name}
-                  </div>
-                  <div style={sub}>
-                    {r.employee_id} • {r.department || "-"}
-                  </div>
-                </td>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "8px 0 12px" }}>
+        <label style={{ fontSize: 12, opacity: 0.7 }}>Sırala:</label>
+        <select value={order} onChange={(e) => set({ order: e.target.value, offset: 0 })}
+          style={{ padding: "6px 8px", border: "1px solid #ddd", borderRadius: 8 }}>
+          <option value="-total">İşlem (azalan)</option>
+          <option value="total">İşlem (artan)</option>
+          <option value="date">Tarih</option>
+          <option value="-avg_first_sec">Ø İlk Yanıt (azalan)</option>
+          <option value="-avg_close_sec">Ø Sonuçlandırma (azalan)</option>
+        </select>
 
-                <td style={tdRight}>{r.count_total}</td>
-                <td style={tdRight}>{r.avg_first_sec != null ? fmtMMSS(r.avg_first_sec) : "—"}</td>
-                <td style={tdRight}>{fmtMMSS(r.avg_close_sec)}</td>
+        <label style={{ fontSize: 12, opacity: 0.7, marginLeft: 12 }}>Sayfa boyutu:</label>
+        <select value={String(limit)} onChange={(e) => set({ limit: Number(e.target.value), offset: 0 })}
+          style={{ padding: "6px 8px", border: "1px solid #ddd", borderRadius: 8 }}>
+          {[25, 50, 100, 250].map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </div>
 
-                <td style={tdLeft}>
-                  <span style={{ marginRight: 6 }}>{r.trend.emoji}</span>
-                  <b>{r.trend.pct == null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}</b>
-                  <div style={sub}>Ekip Ø: {fmtMMSS(r.trend.team_avg_close_sec)}</div>
-                </td>
+      {loading && <Loading />}
+      {err && <Alert variant="error" title="Rapor yüklenemedi">{err}</Alert>}
 
-                <td style={tdLeft}>
-                  <Link to={`/employees/${encodeURIComponent(r.employee_id)}?tab=activity`}>Kişi</Link>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={6} style={{ padding: 12, fontSize: 13, color: "#777" }}>
-                  Kayıt yok.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      <Table columns={visibleColumns} data={rows} />
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+        <button disabled={!hasPrev} onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })} style={navBtnStyle(!hasPrev)}>◀ Önceki</button>
+        <button disabled={!hasNext} onClick={() => hasNext && set({ offset: offset + limit })} style={navBtnStyle(!hasNext)}>Sonraki ▶</button>
+        <div style={{ marginLeft: 8, opacity: 0.7 }}>Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}</div>
       </div>
     </div>
   );
+}
+
+function navBtnStyle(disabled: boolean): React.CSSProperties {
+  return { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 8, background: disabled ? "#f1f1f1" : "#f7f7f7", cursor: disabled ? "default" : "pointer" };
 }
