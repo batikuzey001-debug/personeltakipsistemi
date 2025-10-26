@@ -69,14 +69,28 @@ from app.scheduler.admin_tasks_jobs import start_scheduler
 
 app = FastAPI(title=settings.APP_NAME)
 
-# CORS
+# ---------------- CORS (PROD origin + local) ----------------
+# ENV ile override edilebilir: CORS_ALLOW_ORIGINS="https://foo.com,https://bar.com"
+_env_origins = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
+if _env_origins:
+    FRONT_ORIGINS = [o.strip() for o in _env_origins.split(",") if o.strip()]
+else:
+    FRONT_ORIGINS = [
+        "https://personeltakipsistemi-production.up.railway.app",  # prod web
+        "http://localhost:5173",                                    # local vite
+        "http://127.0.0.1:5173",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
+    allow_origins=FRONT_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,
 )
+print(f"[cors] allow_origins={FRONT_ORIGINS}")
 
 # tabloları oluştur
 Base.metadata.create_all(bind=engine)
