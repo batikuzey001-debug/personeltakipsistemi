@@ -15,21 +15,22 @@ const linkStyle: React.CSSProperties = {
 export default function Sidebar() {
   const { auth } = useAuth();
 
+  // Herkesin gördüğü temel menü
   const base = [
     { to: "/dashboard", label: "Dashboard" },
-    { to: "/employees", label: "Personeller" },
+    { to: "/personel", label: "Personel" }, // /employees -> /personel
   ];
 
+  // Yalnızca super_admin menüsü
   const adminOnly = [
-    { to: "/reports/daily", label: "Rapor • Günlük (Bonus/Finans)" },
-    { to: "/reports/livechat", label: "Rapor • Canlı Destek" },
-    { to: "/livechat/missed", label: "Canlı Destek • Missed" }, // ✅ yeni eklendi
+    { to: "/reports", label: "Raporlar" }, // /reports/daily & /reports/livechat -> tek sayfa
+    { to: "/livechat/missed", label: "Canlı Destek • Missed" },
     { to: "/admin/tasks", label: "Admin Görevleri" },
     { to: "/admin/tasks/templates", label: "Görev Şablonları" },
     { to: "/shift-planner", label: "Shift Planlama" },
     { to: "/admin/bot", label: "Bot İşlemleri" },
     { to: "/admin/notifications", label: "Bildirimler" },
-    { to: "/identities", label: "Kişi Eşleştirme" },
+    // { to: "/identities", label: "Kişi Eşleştirme" }, // Kimlikler artık /personel içinde sekme olarak yer alıyor
     { to: "/users", label: "Kullanıcılar" },
   ];
 

@@ -1,136 +1,126 @@
 // apps/admin/src/pages/Identities.tsx
 import React, { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { api, ApiListResponse } from "../lib/api";
+import Table, { Column } from "../components/Table";
+import ExportCSVButton from "../components/ExportCSVButton";
+import Loading from "../components/Loading";
+import Alert from "../components/Alert";
 
-const API = import.meta.env.VITE_API_BASE_URL as string;
-const DEPARTMENTS = ["Call Center", "Canlı", "Finans", "Bonus", "Admin"] as const;
+type IdentityRow = {
+  id?: number;
+  provider?: string;
+  username?: string;
+  external_id?: string;
+  employee_id?: number | string;
+  employee_code?: string;
+  employee_name?: string;
+  created_at?: string;
+  [k: string]: any;
+};
 
-async function apiGet<T>(path: string): Promise<T> {
-  const token = localStorage.getItem("token") || "";
-  const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (r.status === 401) { window.location.href = "/login"; throw new Error("Unauthorized"); }
-  if (!r.ok) throw new Error(await r.text());
-  return (await r.json()) as T;
-}
+// ✅ Zip’te kök liste uç yok; mevcut uç: GET /identities/pending
+const PATH = "/identities/pending";
 
-async function apiPostJSON<T>(path: string, body: any): Promise<T> {
-  const token = localStorage.getItem("token") || "";
-  const r = await fetch(`${API}${path}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (r.status === 401) { window.location.href = "/login"; throw new Error("Unauthorized"); }
-  if (!r.ok) throw new Error(await r.text());
-  return (await r.json()) as T;
-}
-
-type Pending = { actor_key: string; hint_name?: string; hint_team?: string; inserted_at: string };
-
-function parseActor(actor_key: string) {
-  if (actor_key.startsWith("uid:"))   return { uid: actor_key.slice(4),  uname: "" };
-  if (actor_key.startsWith("uname:")) return { uid: "",                  uname: actor_key.slice(6) }; // "@nick"
-  return { uid: "", uname: "" };
-}
-
-export default function IdentitiesPage() {
-  const [rows, setRows] = useState<Pending[]>([]);
-  const [err, setErr] = useState<string | null>(null);
-  const [ok, setOk] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  async function load() {
-    setErr(null); setOk(null); setLoading(true);
-    try { setRows(await apiGet<Pending[]>("/identities/pending")); }
-    catch (e: any) { setErr(e?.message || "Liste alınamadı"); }
-    finally { setLoading(false); }
-  }
-  useEffect(() => { load(); }, []);
-
-  async function createAndBind(actor_key: string, employee_id: string, full_name: string, department: string) {
-    setErr(null); setOk(null);
-    if (!department) { setErr("Lütfen departman seçin."); return; }
-    const nameFinal = (full_name || "").trim() || "Personel";
-    await apiPostJSON("/identities/bind", {
-      actor_key,
-      create_full_name: nameFinal,
-      create_department: department,
-      employee_id: employee_id?.trim() || null,
-      retro_days: 14,
+function useQueryDefaults() {
+  const [params, setParams] = useSearchParams();
+  const order = params.get("order") || "provider";
+  const limit = Number(params.get("limit") || 50);
+  const offset = Number(params.get("offset") || 0);
+  const q = params.get("q") || "";
+  const set = (patch: Record<string, string | number | undefined>) => {
+    const next = new URLSearchParams(params);
+    Object.entries(patch).forEach(([k, v]) => {
+      if (v == null || v === "") next.delete(k);
+      else next.set(k, String(v));
     });
-    setOk(employee_id?.trim() ? `Oluşturuldu ve bağlandı: ${employee_id.trim()}` : "Oluşturuldu ve bağlandı (otomatik RD-xxx)");
-    await load();
-  }
+    if ("q" in patch) next.set("offset", "0");
+    setParams(next, { replace: true });
+  };
+  return { order, limit, offset, q, set };
+}
+
+export default function Identities() {
+  const { order, limit, offset, q, set } = useQueryDefaults();
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [data, setData] = useState<ApiListResponse<IdentityRow> | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true); setErr(null);
+    api.get<ApiListResponse<IdentityRow>>(PATH, { order, limit, offset, q: q || undefined })
+      .then((resp) => mounted && setData(resp))
+      .catch((e) => mounted && setErr(e?.message || "Hata"))
+      .finally(() => mounted && setLoading(false));
+    return () => { mounted = false; };
+  }, [order, limit, offset, q]);
+
+  const columns: Column<IdentityRow>[] = [
+    { key: "provider", header: "Sağlayıcı", width: 140 },
+    { key: "username", header: "Kullanıcı Adı", width: 220 },
+    { key: "external_id", header: "External ID", width: 200 },
+    { key: "employee_name", header: "Personel", width: 240, render: r => <span>{r.employee_name || ""} {r.employee_code ? <span style={{opacity:.6}}>({r.employee_code})</span> : ""}</span> },
+    ...(data?.rows?.some(r => r.created_at) ? [{ key: "created_at", header: "Eklendi", width: 180 } as Column<IdentityRow>] : []),
+  ];
+
+  const rows = data?.rows || [];
+  const total = data?.total || 0;
+  const hasPrev = (offset > 0);
+  const hasNext = (offset + limit < total);
 
   return (
-    <div style={{ display: "grid", gap: 16 }}>
-      <h1>Kişi Eşleştirme (Pending)</h1>
-
-      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        <button onClick={load} disabled={loading}>{loading ? "Yükleniyor…" : "Yenile"}</button>
-        {ok && <span style={{ color: "green", fontSize: 13 }}>{ok}</span>}
-        {err && <span style={{ color: "#b00020", fontSize: 13 }}>{err}</span>}
+    <div>
+      <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:8 }}>
+        <strong>Kişi Eşleştirme (Bekleyen)</strong>
+        <div style={{ flex:1 }} />
+        <ExportCSVButton filename="identities-pending" rows={rows} />
       </div>
 
-      <div style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#fafafa" }}>
-              <th style={{ textAlign: "left", padding: 8 }}>actor_key</th>
-              <th style={{ textAlign: "left", padding: 8 }}>İsim / Kullanıcı Adı</th>
-              <th style={{ textAlign: "left", padding: 8 }}>Oluştur + Bağla</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => {
-              const keySafe = r.actor_key.replace(/[^a-zA-Z0-9@:_-]/g, "");
-              const { uid, uname } = parseActor(r.actor_key);
-              // Görünüm: Önce hint_name (mesai adı veya webhook'tan düşen isim), yoksa username (@"siz), yoksa —
-              const displayName = (r.hint_name && r.hint_name.trim())
-                ? r.hint_name.trim()
-                : (uname ? uname.replace(/^@/, "") : "—");
+      <div style={{ display:"flex", gap:8, alignItems:"center", margin:"8px 0 12px" }}>
+        <input
+          placeholder="Ara (username, external id, ad/kod)"
+          value={q}
+          onChange={(e) => set({ q: e.target.value })}
+          style={{ padding:"6px 8px", border:"1px solid #ddd", borderRadius:8, background:"#fff", minWidth:260 }}
+        />
+        <label style={{ fontSize:12, opacity:.7 }}>Sırala:</label>
+        <select
+          value={order}
+          onChange={(e) => set({ order: e.target.value, offset: 0 })}
+          style={{ padding:"6px 8px", border:"1px solid #ddd", borderRadius:8 }}
+        >
+          <option value="provider">Sağlayıcı</option>
+          <option value="username">Kullanıcı Adı</option>
+          <option value="external_id">External ID</option>
+          <option value="employee_name">Personel</option>
+          <option value="-created_at">Eklendi (yeni→eski)</option>
+          <option value="created_at">Eklendi (eski→yeni)</option>
+        </select>
 
-              return (
-                <tr key={r.actor_key} style={{ borderTop: "1px solid #f1f1f1" }}>
-                  <td style={{ padding: 8, fontFamily: "monospace" }}>{r.actor_key}</td>
-                  <td style={{ padding: 8 }}>{displayName}</td>
+        <label style={{ fontSize:12, opacity:.7 }}>Sayfa boyutu:</label>
+        <select
+          value={String(limit)}
+          onChange={(e) => set({ limit: Number(e.target.value), offset: 0 })}
+          style={{ padding:"6px 8px", border:"1px solid #ddd", borderRadius:8 }}
+        >
+          {[25, 50, 100, 250].map(n => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </div>
 
-                  <td style={{ padding: 8 }}>
-                    <form
-                      onSubmit={async (e) => {
-                        e.preventDefault();
-                        const emp  = (e.currentTarget.elements.namedItem(`newid_${keySafe}`) as HTMLInputElement).value.trim();
-                        const name = (e.currentTarget.elements.namedItem(`newname_${keySafe}`) as HTMLInputElement).value.trim();
-                        const dept = (e.currentTarget.elements.namedItem(`newdept_${keySafe}`) as HTMLSelectElement).value;
-                        try {
-                          await createAndBind(r.actor_key, emp, name, dept);
-                        } catch (ex: any) {
-                          setErr(ex?.message || "Oluştur/bağla başarısız");
-                        }
-                      }}
-                    >
-                      <div style={{ display: "grid", gridTemplateColumns: "200px 200px 180px auto", gap: 6, alignItems: "center" }}>
-                        <input name={`newid_${keySafe}`} placeholder="(boş = otomatik RD-xxx)" />
-                        <input name={`newname_${keySafe}`} placeholder="Ad Soyad" defaultValue={displayName !== "—" ? displayName : ""} required />
-                        <select name={`newdept_${keySafe}`} defaultValue="">
-                          <option value="">Departman (seç)</option>
-                          {DEPARTMENTS.map((d) => (<option key={d} value={d}>{d}</option>))}
-                        </select>
-                        <button type="submit">Oluştur + Bağla</button>
-                      </div>
-                      <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                        Telegram ID: <b>{uid || "-"}</b> • Username: <b>{uname || "-"}</b>
-                      </div>
-                    </form>
-                  </td>
-                </tr>
-              );
-            })}
-            {rows.length === 0 && (
-              <tr><td colSpan={3} style={{ padding: 12, color: "#777" }}>Bekleyen kayıt yok.</td></tr>
-            )}
-          </tbody>
-        </table>
+      {loading && <Loading />}
+      {err && <Alert variant="error" title="Kimlikler yüklenemedi">{err}</Alert>}
+
+      <Table columns={columns} data={rows} />
+
+      <div style={{ display:"flex", gap:8, alignItems:"center", marginTop:12 }}>
+        <button disabled={!hasPrev} onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })} style={navBtn(!hasPrev)}>◀ Önceki</button>
+        <button disabled={!hasNext} onClick={() => hasNext && set({ offset: offset + limit })} style={navBtn(!hasNext)}>Sonraki ▶</button>
+        <div style={{ marginLeft:8, opacity:.7 }}>Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}</div>
       </div>
     </div>
   );
+}
+function navBtn(disabled:boolean): React.CSSProperties {
+  return { padding:"6px 10px", border:"1px solid #ddd", borderRadius:8, background: disabled ? "#f1f1f1" : "#f7f7f7", cursor: disabled ? "default" : "pointer" };
 }

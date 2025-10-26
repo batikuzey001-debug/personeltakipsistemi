@@ -1,259 +1,170 @@
 // apps/admin/src/pages/ReportsThreadFeed.tsx
 import React, { useEffect, useMemo, useState } from "react";
-
-const API =
-  (import.meta.env.VITE_API_BASE_URL as string) ||
-  "https://personel-takip-api-production.up.railway.app";
-
-type Channel = "bonus" | "finans";
+import { useSearchParams } from "react-router-dom";
+import { api, ApiListResponse } from "../lib/api";
+import Table, { Column } from "../components/Table";
+import ExportCSVButton from "../components/ExportCSVButton";
+import Loading from "../components/Loading";
+import Alert from "../components/Alert";
+import { useColumnVisibility, ColumnVisibilityControls } from "../components/ColumnVisibility";
 
 type ThreadRow = {
-  corr: string;
-  origin_ts: string | null;
-  first_reply_ts: string | null;
-  first_close_ts: string | null;
-  close_type: "approve" | "reply_close" | "reject";
-  closer_employee_id: string | null;
-  closer_full_name: string | null;
-  closer_department: string | null;
-  first_response_sec: number | null;
-  close_sec: number | null;
-  sla_breach: boolean;
-  close_chat_id?: number;
-  close_msg_id?: number;
+  ts?: string;
+  date?: string;
+  time?: string;
+  type?: string;
+  actor_employee_code?: string;
+  actor_employee_name?: string;
+  correlation_id?: string;
+  message?: string;
+  meta_json?: Record<string, any>;
+  [k: string]: any;
 };
 
-function todayYmd(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const PATH = "/reports/thread-feed";
+
+function useQueryDefaults() {
+  const [params, setParams] = useSearchParams();
+  const today = useMemo(() => new Date(), []);
+  const toStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  const defaultFrom = useMemo(() => { const a = new Date(today); a.setDate(a.getDate() - 1); return toStr(a); }, [today]);
+  const defaultTo = useMemo(() => toStr(today), [today]);
+  const from = params.get("from") || defaultFrom;
+  const to = params.get("to") || defaultTo;
+  const order = params.get("order") || "-ts";
+  const limit = Number(params.get("limit") || 50);
+  const offset = Number(params.get("offset") || 0);
+  const q = params.get("q") || "";
+  const type = params.get("type") || "";
+  const employee = params.get("employee") || "";
+  const set = (patch: Record<string, string | number | undefined>) => {
+    const next = new URLSearchParams(params);
+    Object.entries(patch).forEach(([k, v]) => (v == null || v === "") ? next.delete(k) : next.set(k, String(v)));
+    if ("q" in patch || "type" in patch || "employee" in patch || "from" in patch || "to" in patch) next.set("offset", "0");
+    setParams(next, { replace: true });
+  };
+  return { from, to, order, limit, offset, q, type, employee, set };
 }
-function addDays(ymd: string, days: number): string {
-  const [y, m, d] = ymd.split("-").map(Number);
-  const dt = new Date(y, (m as number) - 1, d + days);
-  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+
+function shortId(id?: string) {
+  if (!id) return "";
+  return id.length <= 10 ? id : `${id.slice(0, 6)}…${id.slice(-4)}`;
 }
-function fmtMMSS(sec: number | null) {
-  if (sec == null) return "—";
-  const s = Math.max(0, Math.round(sec));
-  const mm = Math.floor(s / 60);
-  const ss = s % 60;
-  return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
-}
-async function apiGet<T>(path: string): Promise<T> {
-  const token = localStorage.getItem("token") || "";
-  const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!r.ok) throw new Error(await r.text());
-  return (await r.json()) as T;
-}
-function downloadCsv(rows: ThreadRow[], filename = "threads.csv") {
-  const header = [
-    "corr",
-    "origin_ts",
-    "first_reply_ts",
-    "first_close_ts",
-    "close_type",
-    "closer_employee_id",
-    "closer_full_name",
-    "closer_department",
-    "first_response_sec",
-    "close_sec",
-    "sla_breach",
-  ];
-  const lines = [header.join(",")];
-  rows.forEach((r) => {
-    lines.push(
-      [
-        r.corr,
-        r.origin_ts ?? "",
-        r.first_reply_ts ?? "",
-        r.first_close_ts ?? "",
-        r.close_type,
-        r.closer_employee_id ?? "",
-        (r.closer_full_name ?? "").replaceAll(",", " "),
-        r.closer_department ?? "",
-        r.first_response_sec ?? "",
-        r.close_sec ?? "",
-        r.sla_breach ? "1" : "0",
-      ].join(",")
-    );
-  });
-  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  URL.revokeObjectURL(url);
-  a.remove();
+function isoToLocal(iso?: string) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    const date = d.toLocaleDateString("tr-TR");
+    const time = d.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return `${date} ${time}`;
+  } catch { return iso; }
 }
 
 export default function ReportsThreadFeed() {
-  const [channel, setChannel] = useState<Channel>("finans");
-  const [from, setFrom] = useState<string>(todayYmd());
-  const [to, setTo] = useState<string>(addDays(todayYmd(), 1)); // exclusive
-  const [order, setOrder] = useState<"close_desc" | "close_asc" | "dur_asc" | "dur_desc">("close_desc");
-  const [slaSec, setSlaSec] = useState<number>(900);
-  const [onlySla, setOnlySla] = useState<boolean>(false);
-  const [rows, setRows] = useState<ThreadRow[]>([]);
+  const { from, to, order, limit, offset, q, type, employee, set } = useQueryDefaults();
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  async function load() {
-    setErr(null);
-    setLoading(true);
-    try {
-      const qs = new URLSearchParams();
-      qs.set("frm", from);
-      qs.set("to", to);
-      qs.set("order", order);
-      qs.set("limit", "200");
-      qs.set("sla_sec", String(slaSec));
-      const path = `/reports/${channel}/threads?${qs.toString()}`;
-      const data = await apiGet<ThreadRow[]>(path);
-      setRows(onlySla ? data.filter((r) => r.sla_breach) : data);
-    } catch (e: any) {
-      setErr(e?.message || "Rapor alınamadı");
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [data, setData] = useState<ApiListResponse<ThreadRow> | null>(null);
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel]);
+    let mounted = true;
+    setLoading(true); setErr(null);
+    api.get<ApiListResponse<ThreadRow>>(PATH, { from, to, order, limit, offset, tz: "Europe/Istanbul", q: q || undefined, type: type || undefined, employee: employee || undefined })
+      .then((resp) => mounted && setData(resp))
+      .catch((e) => mounted && setErr(e?.message || "Hata"))
+      .finally(() => mounted && setLoading(false));
+    return () => { mounted = false; };
+  }, [from, to, order, limit, offset, q, type, employee]);
 
-  const kpi = useMemo(() => {
-    const total = rows.length;
-    const sla = rows.filter((r) => r.sla_breach).length;
-    const avgClose =
-      rows.reduce((a, r) => a + (r.close_sec ?? 0), 0) / (rows.filter((r) => r.close_sec != null).length || 1);
-    const avgFirst =
-      rows.reduce((a, r) => a + (r.first_response_sec ?? 0), 0) /
-      (rows.filter((r) => r.first_response_sec != null).length || 1);
-    return { total, sla, avgClose: Number.isFinite(avgClose) ? avgClose : null, avgFirst: Number.isFinite(avgFirst) ? avgFirst : null };
-  }, [rows]);
+  const columns: Column<ThreadRow>[] = [
+    { key: "ts", header: "Zaman", render: (r) => isoToLocal(r.ts) || r.date || "", width: 180 },
+    { key: "type", header: "Tip", width: 140 },
+    {
+      key: "actor_employee_name", header: "Personel", width: 220,
+      render: (r) => <span>{r.actor_employee_name || ""} <span style={{ opacity: 0.6 }}>{r.actor_employee_code ? `(${r.actor_employee_code})` : ""}</span></span>,
+    },
+    {
+      key: "message", header: "Mesaj",
+      render: (r) => <span style={{ display: "inline-block", maxWidth: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.message || ""}</span>,
+    },
+    { key: "correlation_id", header: "Korelasyon", render: (r) => <span style={{ opacity: 0.8 }}>{shortId(r.correlation_id)}</span>, width: 140 },
+  ];
 
-  // styles
-  const container: React.CSSProperties = { maxWidth: 1200, margin: "0 auto", padding: 12, display: "grid", gap: 12 };
-  const bar: React.CSSProperties = { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" };
-  const kpis: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(4, minmax(160px, 1fr))", gap: 8 };
-  const card: React.CSSProperties = { border: "1px solid #e9e9e9", borderRadius: 12, background: "#fff", padding: 12 };
-  const tableCard: React.CSSProperties = { border: "1px solid #e9e9e9", borderRadius: 12, background: "#fff", overflow: "hidden" };
-  const th: React.CSSProperties = { position: "sticky", top: 0, background: "#fff", borderBottom: "1px solid #eee", fontWeight: 600, fontSize: 13, padding: "6px 10px", textAlign: "left", whiteSpace: "nowrap" };
-  const tdLeft: React.CSSProperties = { padding: "6px 10px", fontSize: 13, textAlign: "left", verticalAlign: "middle" };
-  const tdRight: React.CSSProperties = { padding: "6px 10px", fontSize: 13, textAlign: "right", verticalAlign: "middle", whiteSpace: "nowrap" };
-  const sub: React.CSSProperties = { fontSize: 11, color: "#666" };
+  const storageKey = "cols:reports:thread-feed";
+  const allKeys = columns.map((c) => String(c.key));
+  const { visible, toggle, showAll, hideAll } = useColumnVisibility(allKeys, storageKey);
+  const visibleColumns = columns.filter((c) => visible[String(c.key)] !== false);
+
+  const rows = data?.rows || [];
+  const total = data?.total || 0;
+  const hasPrev = offset > 0;
+  const hasNext = offset + limit < total;
 
   return (
-    <div style={container}>
-      <h1 style={{ margin: 0, fontSize: 20 }}>İşlem Akışı (Thread) · {channel === "finans" ? "Finans" : "Bonus"}</h1>
-
-      <form onSubmit={(e)=>{e.preventDefault(); load();}} style={bar}>
-        <select value={channel} onChange={(e)=>setChannel(e.target.value as Channel)} title="Kanal">
-          <option value="finans">Finans</option>
-          <option value="bonus">Bonus</option>
-        </select>
-
-        <input type="date" value={from} onChange={(e)=>setFrom(e.target.value)} title="Başlangıç (bugün)"/>
-        <input type="date" value={to} onChange={(e)=>setTo(e.target.value)} title="Bitiş (exclusive)"/>
-
-        <select value={order} onChange={(e)=>setOrder(e.target.value as any)} title="Sıralama">
-          <option value="close_desc">Son kapananlar</option>
-          <option value="close_asc">Önce kapananlar</option>
-          <option value="dur_asc">Süre artan</option>
-          <option value="dur_desc">Süre azalan</option>
-        </select>
-
-        <label style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
-          SLA (sn)
-          <input type="number" min={1} max={86400} value={slaSec} onChange={(e)=>setSlaSec(Math.max(1, Number(e.target.value||1)))} style={{ width:80 }}/>
-        </label>
-
-        <label style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
-          Sadece SLA ihlali
-          <input type="checkbox" checked={onlySla} onChange={(e)=>setOnlySla(e.target.checked)}/>
-        </label>
-
-        <button type="submit" disabled={loading}>{loading ? "Yükleniyor…" : "Listele"}</button>
-        <button type="button" onClick={()=>downloadCsv(rows, `threads_${channel}_${from}.csv`)} disabled={!rows.length}>
-          CSV İndir
-        </button>
-
-        {err && <span style={{ color:"#b00020", fontSize:12 }}>{err}</span>}
-      </form>
-
-      {/* KPI */}
-      <div style={kpis}>
-        <div style={card}>
-          <div style={{ fontSize:12, color:"#666", marginBottom:4 }}>Bugün Kapanan Thread</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{kpi.total}</div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize:12, color:"#666", marginBottom:4 }}>SLA İhlali</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{kpi.sla}</div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize:12, color:"#666", marginBottom:4 }}>Ø Sonuçlandırma</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{fmtMMSS(kpi.avgClose)}</div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize:12, color:"#666", marginBottom:4 }}>Ø İlk Yanıt</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{fmtMMSS(kpi.avgFirst)}</div>
-        </div>
+    <div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+        <strong>Aralık:</strong><span>{from} → {to}</span>
+        <div style={{ flex: 1 }} />
+        <ColumnVisibilityControls
+          columns={columns.map((c) => ({ key: String(c.key), header: c.header }))}
+          visible={visible}
+          toggle={toggle}
+          showAll={showAll}
+          hideAll={hideAll}
+        />
+        <ExportCSVButton filename={`thread-feed_${from}_${to}`} rows={rows} />
       </div>
 
-      {/* Tablo */}
-      <div style={tableCard}>
-        <table style={{ width:"100%", borderCollapse:"collapse" }}>
-          <thead>
-            <tr>
-              <th style={{ ...th, width:280 }}>Thread</th>
-              <th style={{ ...th, width:160, textAlign:"right" }}>İlk Yanıt (dk:ss)</th>
-              <th style={{ ...th, width:160, textAlign:"right" }}>Kapanış (dk:ss)</th>
-              <th style={{ ...th, width:120 }}>Tip</th>
-              <th style={{ ...th, width:260 }}>Kapanışı Yapan</th>
-              <th style={{ ...th, width:220 }}>Zamanlar</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={`${r.corr}-${i}`} style={{ borderTop:"1px solid #f5f5f5", background: r.sla_breach ? "#fff5f5" : i%2 ? "#fafafa":"#fff" }}>
-                <td style={tdLeft}>
-                  <div style={{ fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{r.corr}</div>
-                  <div style={sub}>
-                    {r.close_chat_id && r.close_msg_id ? (
-                      <a
-                        href={`https://t.me/c/${String(r.close_chat_id).replace("-100","")}/${r.close_msg_id}`}
-                        target="_blank" rel="noreferrer"
-                      >
-                        Telegram’da aç
-                      </a>
-                    ) : "—"}
-                  </div>
-                </td>
-                <td style={tdRight}>{fmtMMSS(r.first_response_sec)}</td>
-                <td style={tdRight}>{fmtMMSS(r.close_sec)}</td>
-                <td style={tdLeft}>{r.close_type}</td>
-                <td style={tdLeft}>
-                  <div style={{ fontWeight:600 }}>{r.closer_full_name ?? "—"}</div>
-                  <div style={sub}>{r.closer_employee_id ?? "—"} • {r.closer_department ?? "-"}</div>
-                </td>
-                <td style={tdLeft}>
-                  <div style={sub}>Origin: {r.origin_ts ?? "—"}</div>
-                  <div style={sub}>First: {r.first_reply_ts ?? "—"}</div>
-                  <div style={sub}>Close: {r.first_close_ts ?? "—"}</div>
-                </td>
-              </tr>
-            ))}
-            {!rows.length && (
-              <tr><td colSpan={6} style={{ padding:12, color:"#777" }}>Kayıt yok.</td></tr>
-            )}
-          </tbody>
-        </table>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", margin: "8px 0 12px" }}>
+        <input placeholder="Ara (mesaj, korelasyon, vs.)" value={q} onChange={(e) => set({ q: e.target.value })} style={inputStyle} />
+        <input placeholder="Personel (kod/isim)" value={employee} onChange={(e) => set({ employee: e.target.value })} style={inputStyle} />
+        <select value={type} onChange={(e) => set({ type: e.target.value })} style={{ ...inputStyle, minWidth: 200 }}>
+          <option value="">Tip (hepsi)</option>
+          <option value="reply_first">reply_first</option>
+          <option value="reply_close">reply_close</option>
+          <option value="approve">approve</option>
+          <option value="reject">reject</option>
+          <option value="missed">missed</option>
+          <option value="note">note</option>
+        </select>
+
+        <label style={{ fontSize: 12, opacity: 0.7 }}>Sırala:</label>
+        <select value={order} onChange={(e) => set({ order: e.target.value, offset: 0 })} style={inputStyle}>
+          <option value="-ts">Zaman (yeniden eskiye)</option>
+          <option value="ts">Zaman (eskiden yeniye)</option>
+          <option value="type">Tip</option>
+          <option value="actor_employee_name">Personel</option>
+        </select>
+
+        <label style={{ fontSize: 12, opacity: 0.7, marginLeft: 12 }}>Sayfa boyutu:</label>
+        <select value={String(limit)} onChange={(e) => set({ limit: Number(e.target.value), offset: 0 })} style={inputStyle}>
+          {[25, 50, 100, 250].map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </div>
+
+      {loading && <Loading />}
+      {err && <Alert variant="error" title="Rapor yüklenemedi">{err}</Alert>}
+
+      <Table columns={visibleColumns} data={rows} />
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+        <button disabled={!hasPrev} onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })} style={navBtnStyle(!hasPrev)}>◀ Önceki</button>
+        <button disabled={!hasNext} onClick={() => hasNext && set({ offset: offset + limit })} style={navBtnStyle(!hasNext)}>Sonraki ▶</button>
+        <div style={{ marginLeft: 8, opacity: 0.7 }}>
+          Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}
+        </div>
       </div>
     </div>
   );
+}
+
+const inputStyle: React.CSSProperties = {
+  padding: "6px 8px",
+  border: "1px solid #ddd",
+  borderRadius: 8,
+  background: "#fff",
+};
+
+function navBtnStyle(disabled: boolean): React.CSSProperties {
+  return { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 8, background: disabled ? "#f1f1f1" : "#f7f7f7", cursor: "default" };
 }
