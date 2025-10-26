@@ -1,125 +1,221 @@
 // apps/admin/src/pages/LivechatAgentReport.tsx
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { api, ApiListResponse } from "../lib/api";
+import Table, { Column } from "../components/Table";
+import ExportCSVButton from "../components/ExportCSVButton";
+import { formatSecondsToMmSs, formatPercent } from "../lib/format";
 
-const API = import.meta.env.VITE_API_BASE_URL as string;
-
-type Row = {
-  agent_email: string;
-  total_chats: number;
-  first_response_time_sec: number | null;
-  avg_response_time_sec: number | null;   // ART
-  avg_handle_time_sec: number | null;     // AHT
-  csat_percent: number | null;
-  csat_good?: number | null;
-  csat_bad?: number | null;
-  csat_total?: number | null;
-  logged_in_hours?: number | null;
-  accepting_hours?: number | null;
-  not_accepting_hours?: number | null;
-  chatting_hours?: number | null;
-  transfer_out?: number | null;
-  missed_chats?: number | null;
-  auto_transfer?: number | null;
+type AgentRow = {
+  date?: string;              // "2025-10-26" (opsiyonel)
+  employee_code?: string;     // "RD-303"
+  employee_name?: string;     // "Hilal"
+  dept?: string;              // "livechat"
+  handled_count?: number;     // kapanan / sonuçlanan sohbet
+  missed_count?: number;      // kaçırılan sohbet
+  first_response_sec?: number;// ort. ilk yanıt (sn)
+  close_sec?: number;         // ort. sonuçlandırma (sn)
+  online_sec?: number;        // çevrimiçi süre (sn)
+  availability_rate?: number; // 0..1 veya 0..100
+  csat_rate?: number;         // müşteri memnuniyeti (0..1 veya 0..100) - opsiyon
+  [k: string]: any;
 };
 
-function fmtSec(v: number | null | undefined) {
-  if (v == null || isNaN(v as number)) return "-";
-  const s = Math.round(Number(v));
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${m}:${r.toString().padStart(2, "0")}`;
+// Sende farklıysa değiştir:
+const PATH = "/reports/livechat/agents";
+
+function useQueryDefaults() {
+  const [params, setParams] = useSearchParams();
+
+  const today = useMemo(() => new Date(), []);
+  const toStr = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate()
+    ).padStart(2, "0")}`;
+
+  const defaultFrom = useMemo(() => {
+    const a = new Date(today);
+    a.setDate(a.getDate() - 6);
+    return toStr(a);
+  }, [today]);
+  const defaultTo = useMemo(() => toStr(today), [today]);
+
+  const from = params.get("from") || defaultFrom;
+  const to = params.get("to") || defaultTo;
+  const order = params.get("order") || "-handled_count";
+  const limit = Number(params.get("limit") || 50);
+  const offset = Number(params.get("offset") || 0);
+
+  const set = (patch: Record<string, string | number | undefined>) => {
+    const next = new URLSearchParams(params);
+    Object.entries(patch).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === "") next.delete(k);
+      else next.set(k, String(v));
+    });
+    setParams(next, { replace: true });
+  };
+
+  return { from, to, order, limit, offset, set };
 }
 
 export default function LivechatAgentReport() {
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [rows, setRows] = useState<Row[]>([]);
+  const { from, to, order, limit, offset, set } = useQueryDefaults();
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [q, setQ] = useState("");
+  const [data, setData] = useState<ApiListResponse<AgentRow> | null>(null);
 
-  const load = async () => {
-    setLoading(true); setErr(null);
-    try {
-      const r = await fetch(`${API}/report/daily?date=${date}`);
-      if (!r.ok) throw new Error(await r.text());
-      const j = await r.json();
-      setRows((j?.rows || []) as Row[]);
-    } catch (e: any) {
-      setErr(e?.message || "Hata");
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setErr(null);
+    api
+      .get<ApiListResponse<AgentRow>>(PATH, {
+        from,
+        to,
+        order, // "-handled_count" | "first_response_sec" | "close_sec" ...
+        limit,
+        offset,
+        tz: "Europe/Istanbul",
+      })
+      .then((resp) => {
+        if (!mounted) return;
+        setData(resp);
+      })
+      .catch((e) => {
+        if (!mounted) return;
+        setErr(e?.message || "Hata");
+      })
+      .finally(() => mounted && setLoading(false));
+    return () => {
+      mounted = false;
+    };
+  }, [from, to, order, limit, offset]);
 
-  useEffect(() => { load(); /* ilk yük */ }, []);
+  const columns: Column<AgentRow>[] = [
+    { key: "employee_name", header: "Personel" },
+    { key: "employee_code", header: "Kod", width: 100 },
+    { key: "handled_count", header: "Sonuçlanan", width: 110 },
+    { key: "missed_count", header: "Kaçırılan", width: 100 },
+    {
+      key: "first_response_sec",
+      header: "Ø İlk Yanıt",
+      render: (r) =>
+        r.first_response_sec != null ? formatSecondsToMmSs(r.first_response_sec) : "",
+    },
+    {
+      key: "close_sec",
+      header: "Ø Sonuçlandırma",
+      render: (r) => (r.close_sec != null ? formatSecondsToMmSs(r.close_sec) : ""),
+    },
+    {
+      key: "online_sec",
+      header: "Online",
+      render: (r) => (r.online_sec != null ? formatSecondsToMmSs(r.online_sec) : ""),
+    },
+    {
+      key: "availability_rate",
+      header: "Ulaşılabilirlik",
+      render: (r) => <b style={{ color: "#0a7" }}>{formatPercent(r.availability_rate)}</b>,
+    },
+    ...(data?.rows?.some((r) => r.csat_rate != null)
+      ? [
+          {
+            key: "csat_rate",
+            header: "CSAT",
+            render: (r: AgentRow) => <b>{formatPercent(r.csat_rate)}</b>,
+          } as Column<AgentRow>,
+        ]
+      : []),
+  ];
 
-  const filtered = useMemo(() => {
-    const f = (rows || []).filter(x =>
-      q ? x.agent_email.toLowerCase().includes(q.toLowerCase()) : true
-    );
-    return f.sort((a, b) => (b.total_chats || 0) - (a.total_chats || 0));
-  }, [rows, q]);
+  const rows = data?.rows || [];
+  const total = data?.total || 0;
+  const hasPrev = offset > 0;
+  const hasNext = offset + limit < total;
 
   return (
-    <div className="p-4">
-      <h1 className="text-xl font-semibold mb-3">Rapor • Canlı Destek (Günlük)</h1>
+    <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <strong>Aralık:</strong>
+        <span>
+          {from} → {to}
+        </span>
+        <div style={{ flex: 1 }} />
+        <ExportCSVButton filename={`livechat-agents_${from}_${to}`} rows={rows} />
+      </div>
 
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <input type="date" value={date} onChange={e=>setDate(e.target.value)} className="border px-2 py-1"/>
-        <button onClick={load} className="border px-3 py-1">Yenile</button>
-        <input
-          placeholder="E-posta ara"
-          value={q}
-          onChange={e=>setQ(e.target.value)}
-          className="border px-2 py-1 ml-auto"
-          style={{minWidth:220}}
-        />
+      <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "8px 0 12px" }}>
+        <label style={{ fontSize: 12, opacity: 0.7 }}>Sırala:</label>
+        <select
+          value={order}
+          onChange={(e) => set({ order: e.target.value, offset: 0 })}
+          style={{ padding: "6px 8px", border: "1px solid #ddd", borderRadius: 8 }}
+        >
+          <option value="-handled_count">Sonuçlanan (azalan)</option>
+          <option value="handled_count">Sonuçlanan (artan)</option>
+          <option value="-missed_count">Kaçırılan (azalan)</option>
+          <option value="missed_count">Kaçırılan (artan)</option>
+          <option value="-first_response_sec">Ø İlk Yanıt (azalan)</option>
+          <option value="first_response_sec">Ø İlk Yanıt (artan)</option>
+          <option value="-close_sec">Ø Sonuçlandırma (azalan)</option>
+          <option value="close_sec">Ø Sonuçlandırma (artan)</option>
+          <option value="-online_sec">Online Süre (azalan)</option>
+          <option value="online_sec">Online Süre (artan)</option>
+          <option value="-availability_rate">Ulaşılabilirlik (azalan)</option>
+          <option value="availability_rate">Ulaşılabilirlik (artan)</option>
+          <option value="-csat_rate">CSAT (azalan)</option>
+          <option value="csat_rate">CSAT (artan)</option>
+        </select>
+
+        <label style={{ fontSize: 12, opacity: 0.7, marginLeft: 12 }}>Sayfa boyutu:</label>
+        <select
+          value={String(limit)}
+          onChange={(e) => set({ limit: Number(e.target.value), offset: 0 })}
+          style={{ padding: "6px 8px", border: "1px solid #ddd", borderRadius: 8 }}
+        >
+          {[25, 50, 100, 250].map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
       </div>
 
       {loading && <div>Yükleniyor…</div>}
-      {err && <div className="mb-2" style={{color:"#b91c1c"}}>Hata: {err}</div>}
+      {err && <div style={{ color: "#c33", marginBottom: 8 }}>Hata: {err}</div>}
 
-      <table className="w-full text-sm border">
-        <thead className="bg-gray-100">
-          <tr>
-            <th className="p-2 text-left">Agent (e-posta)</th>
-            <th className="p-2 text-center">Chat</th>
-            <th className="p-2 text-center">FRT</th>
-            <th className="p-2 text-center">ART</th>
-            <th className="p-2 text-center">AHT</th>
-            <th className="p-2 text-center">CSAT %</th>
-            <th className="p-2 text-center">İyi/Kötü</th>
-            <th className="p-2 text-center">Missed</th>
-            <th className="p-2 text-center">Auto Transfer</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtered.map(r => (
-            <tr key={r.agent_email} className="border-t">
-              <td className="p-2">{r.agent_email}</td>
-              <td className="p-2 text-center">{r.total_chats ?? 0}</td>
-              <td className="p-2 text-center">{fmtSec(r.first_response_time_sec)}</td>
-              <td className="p-2 text-center">{fmtSec(r.avg_response_time_sec)}</td>
-              <td className="p-2 text-center">{fmtSec(r.avg_handle_time_sec)}</td>
-              <td className="p-2 text-center">
-                {r.csat_percent != null ? `${r.csat_percent.toFixed(2)}%` : "-"}
-              </td>
-              <td className="p-2 text-center">
-                {(r.csat_good ?? 0)}/{(r.csat_bad ?? 0)}
-              </td>
-              <td className="p-2 text-center">{r.missed_chats ?? 0}</td>
-              <td className="p-2 text-center">{r.auto_transfer ?? 0}</td>
-            </tr>
-          ))}
-          {!loading && !err && filtered.length === 0 && (
-            <tr><td className="p-2 text-center" colSpan={9}>Kayıt yok</td></tr>
-          )}
-        </tbody>
-      </table>
+      <Table columns={columns} data={rows} />
 
-      <div className="text-xs text-gray-500 mt-2">
-        Kaynak: Reports API v3.6 • Gün: {date}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+        <button
+          disabled={!hasPrev}
+          onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })}
+          style={navBtnStyle(!hasPrev)}
+        >
+          ◀ Önceki
+        </button>
+        <button
+          disabled={!hasNext}
+          onClick={() => hasNext && set({ offset: offset + limit })}
+          style={navBtnStyle(!hasNext)}
+        >
+          Sonraki ▶
+        </button>
+        <div style={{ marginLeft: 8, opacity: 0.7 }}>
+          Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}
+        </div>
       </div>
     </div>
   );
+}
+
+function navBtnStyle(disabled: boolean): React.CSSProperties {
+  return {
+    padding: "6px 10px",
+    border: "1px solid #ddd",
+    borderRadius: 8,
+    background: disabled ? "#f1f1f1" : "#f7f7f7",
+    cursor: disabled ? "default" : "pointer",
+  };
 }
