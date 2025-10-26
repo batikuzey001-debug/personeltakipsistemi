@@ -1,89 +1,281 @@
 // apps/admin/src/pages/Shifts.tsx
-import React, { useEffect, useState } from "react";
-const API = (import.meta.env.VITE_API_BASE_URL as string) || "";
+import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { api, ApiListResponse } from "../lib/api";
+import Table, { Column } from "../components/Table";
+import ExportCSVButton from "../components/ExportCSVButton";
+import Loading from "../components/Loading";
+import Alert from "../components/Alert";
 
-type ShiftDef = { id: number; name: string; start_time: string; end_time: string; is_active: boolean };
+type ShiftRow = {
+  id?: number;
+  date?: string;             // "2025-10-26"
+  employee_code?: string;    // "RD-123"
+  employee_name?: string;    // "Asena"
+  start_ts?: string;         // ISO
+  end_ts?: string;           // ISO
+  duration_sec?: number;     // saniye
+  status?: string;           // "planned" | "done" | "missed"
+  note?: string;
+  [k: string]: any;
+};
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = localStorage.getItem("token") || "";
-  const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...init });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json() as Promise<T>;
+// Backend uç adresin farklıysa değiştir:
+const PATH = "/shifts";
+
+function useQueryDefaults() {
+  const [params, setParams] = useSearchParams();
+
+  const today = useMemo(() => new Date(), []);
+  const toStr = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate()
+    ).padStart(2, "0")}`;
+
+  const defaultFrom = useMemo(() => {
+    const a = new Date(today);
+    a.setDate(a.getDate() - 6);
+    return toStr(a);
+  }, [today]);
+
+  const defaultTo = useMemo(() => toStr(today), [today]);
+
+  const from = params.get("from") || defaultFrom;
+  const to = params.get("to") || defaultTo;
+  const order = params.get("order") || "date";
+  const limit = Number(params.get("limit") || 50);
+  const offset = Number(params.get("offset") || 0);
+  const status = params.get("status") || "";
+  const q = params.get("q") || ""; // ad, kod, not
+
+  const set = (patch: Record<string, string | number | undefined>) => {
+    const next = new URLSearchParams(params);
+    Object.entries(patch).forEach(([k, v]) => {
+      if (v == null || v === "") next.delete(k);
+      else next.set(k, String(v));
+    });
+    if ("from" in patch || "to" in patch || "status" in patch || "q" in patch) next.set("offset", "0");
+    setParams(next, { replace: true });
+  };
+
+  return { from, to, order, limit, offset, status, q, set };
+}
+
+function isoToLocal(iso?: string) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    const date = d.toLocaleDateString("tr-TR");
+    const time = d.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+    return `${date} ${time}`;
+  } catch {
+    return iso;
+  }
+}
+
+function formatSecondsToHhMm(sec?: number | null) {
+  if (sec == null) return "";
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 export default function Shifts() {
-  const [rows, setRows] = useState<ShiftDef[]>([]);
-  const [name, setName] = useState(""); const [start, setStart] = useState("08:00"); const [end, setEnd] = useState("16:00"); const [active, setActive] = useState(true);
-  const [loading, setLoading] = useState(false); const [err, setErr] = useState<string | null>(null); const [msg, setMsg] = useState<string>("");
+  const { from, to, order, limit, offset, status, q, set } = useQueryDefaults();
 
-  async function load(){ setLoading(true); setErr(null);
-    try{ const data = await api<ShiftDef[]>("/shifts"); setRows(Array.isArray(data)?data:[]);}
-    catch(e:any){ setErr(e?.message||"Vardiyalar alınamadı"); }
-    finally{ setLoading(false); }
-  }
-  useEffect(()=>{ load(); }, []);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [data, setData] = useState<ApiListResponse<ShiftRow> | null>(null);
 
-  async function createOne(){
-    if(!name.trim()) { setErr("Ad gerekli"); setTimeout(()=>setErr(null),1200); return; }
-    try{
-      const body = { name: name.trim(), start_time: start, end_time: end, is_active: active };
-      const s = await api<ShiftDef>("/shifts", { method:"POST", body: JSON.stringify(body) });
-      setRows(prev=>[...prev, s]); setName(""); setStart("08:00"); setEnd("16:00"); setActive(true);
-      setMsg("Eklendi"); setTimeout(()=>setMsg(""),1000);
-    }catch(e:any){ setErr(e?.message||"Eklenemedi"); setTimeout(()=>setErr(null),1400); }
-  }
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setErr(null);
+    api
+      .get<ApiListResponse<ShiftRow>>(PATH, {
+        from,
+        to,
+        order,
+        limit,
+        offset,
+        status: status || undefined,
+        q: q || undefined,
+        tz: "Europe/Istanbul",
+      })
+      .then((resp) => mounted && setData(resp))
+      .catch((e) => mounted && setErr(e?.message || "Hata"))
+      .finally(() => mounted && setLoading(false));
+    return () => {
+      mounted = false;
+    };
+  }, [from, to, order, limit, offset, status, q]);
 
-  async function toggle(s: ShiftDef){
-    try{
-      const body = { name: s.name, start_time: s.start_time, end_time: s.end_time, is_active: !s.is_active };
-      const res = await api<ShiftDef>(`/shifts/${s.id}`, { method:"PATCH", body: JSON.stringify(body) });
-      setRows(prev=>prev.map(x=>x.id===s.id?res:x));
-    }catch(e:any){ setErr(e?.message||"Güncellenemedi"); setTimeout(()=>setErr(null),1400); }
-  }
+  const columns: Column<ShiftRow>[] = [
+    { key: "date", header: "Tarih", width: 110 },
+    {
+      key: "employee_name",
+      header: "Personel",
+      width: 240,
+      render: (r) => (
+        <span>
+          {r.employee_name || ""}{" "}
+          {r.employee_code ? <span style={{ opacity: 0.6 }}>({r.employee_code})</span> : ""}
+        </span>
+      ),
+    },
+    { key: "start_ts", header: "Başlangıç", width: 170, render: (r) => isoToLocal(r.start_ts) },
+    { key: "end_ts", header: "Bitiş", width: 170, render: (r) => isoToLocal(r.end_ts) },
+    {
+      key: "duration_sec",
+      header: "Süre",
+      width: 90,
+      render: (r) => formatSecondsToHhMm(r.duration_sec),
+    },
+    {
+      key: "status",
+      header: "Durum",
+      width: 120,
+      render: (r) => (
+        <span
+          style={{
+            padding: "2px 8px",
+            borderRadius: 999,
+            border: "1px solid #ddd",
+            background: r.status === "done" ? "#eefaf2" : r.status === "missed" ? "#fff2f2" : "#fafafa",
+            color: r.status === "done" ? "#1b7d3a" : r.status === "missed" ? "#b22323" : "#333",
+            fontWeight: 700,
+          }}
+        >
+          {r.status}
+        </span>
+      ),
+    },
+    ...(data?.rows?.some((r) => r.note)
+      ? [{ key: "note", header: "Not" } as Column<ShiftRow>]
+      : []),
+  ];
 
-  async function remove(id:number){
-    if(!confirm("Silinsin mi?")) return;
-    try{ await api(`/shifts/${id}`, { method:"DELETE" }); setRows(prev=>prev.filter(x=>x.id!==id)); }
-    catch(e:any){ setErr(e?.message||"Silinemedi"); setTimeout(()=>setErr(null),1400); }
-  }
+  const rows = data?.rows || [];
+  const total = data?.total || 0;
+  const hasPrev = offset > 0;
+  const hasNext = offset + limit < total;
 
   return (
-    <div style={{ maxWidth: 900, margin:"0 auto", padding:16 }}>
-      <h1 style={{ marginTop:0 }}>Vardiya Tanımları</h1>
-
-      <div style={{ border:"1px solid #eef0f4", borderRadius:10, padding:12, marginBottom:12 }}>
-        <div style={{ fontSize:12, color:"#6b7280", marginBottom:8 }}>Yeni Vardiya</div>
-        <div style={{ display:"grid", gridTemplateColumns:"minmax(200px,1fr) 120px 120px 120px", gap:8, alignItems:"end" }}>
-          <div><input placeholder="Ad (örn: 08-16 Genel)" value={name} onChange={e=>setName(e.target.value)} /></div>
-          <div><label style={{ fontSize:12, color:"#6b7280" }}>Başlangıç</label><input type="time" value={start} onChange={e=>setStart(e.target.value)} /></div>
-          <div><label style={{ fontSize:12, color:"#6b7280" }}>Bitiş</label><input type="time" value={end} onChange={e=>setEnd(e.target.value)} /></div>
-          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-            <label style={{ display:"inline-flex", alignItems:"center", gap:6 }}><input type="checkbox" checked={active} onChange={e=>setActive(e.target.checked)} /> aktif</label>
-            <button onClick={createOne}>Ekle</button>
-          </div>
-        </div>
+    <div>
+      {/* Üst çubuk */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+        <strong>Vardiya Listesi</strong>
+        <div style={{ flex: 1 }} />
+        <ExportCSVButton filename={`shifts_${from}_${to}`} rows={rows} />
       </div>
 
-      <div style={{ border:"1px solid #eef0f4", borderRadius:10, overflow:"hidden" }}>
-        <div style={{ display:"grid", gridTemplateColumns:"minmax(240px,1fr) 140px 140px 120px 120px", gap:8, padding:10, background:"#f9fafb", fontWeight:700, fontSize:12 }}>
-          <div>Ad</div><div>Başlangıç</div><div>Bitiş</div><div>Durum</div><div style={{ textAlign:"right" }}>Aksiyon</div>
-        </div>
-        {rows.map((s,i)=>(
-          <div key={s.id} style={{ display:"grid", gridTemplateColumns:"minmax(240px,1fr) 140px 140px 120px 120px", gap:8, padding:10, borderTop:"1px solid #eef0f4", background:i%2?"#fff":"#fcfcfc" }}>
-            <div>{s.name}</div>
-            <div>{s.start_time}</div>
-            <div>{s.end_time}</div>
-            <div style={{ fontWeight:700, color: s.is_active?"#166534":"#7f1d1d" }}>{s.is_active?"aktif":"pasif"}</div>
-            <div style={{ textAlign:"right", display:"flex", gap:8, justifyContent:"flex-end" }}>
-              <button onClick={()=>toggle(s)}>{s.is_active?"Pasifleştir":"Aktifleştir"}</button>
-              <button onClick={()=>remove(s.id)} style={{ color:"#991b1b" }}>Sil</button>
-            </div>
-          </div>
-        ))}
-        {!loading && !rows.length && <div style={{ padding:16, color:"#6b7280" }}>Kayıt yok.</div>}
+      {/* Filtreler */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", margin: "8px 0 12px" }}>
+        <span style={{ fontWeight: 700 }}>Tarih:</span>
+        <input
+          type="date"
+          value={from}
+          onChange={(e) => set({ from: e.target.value })}
+          style={inputStyle}
+        />
+        <span style={{ opacity: 0.6 }}>—</span>
+        <input
+          type="date"
+          value={to}
+          onChange={(e) => set({ to: e.target.value })}
+          style={inputStyle}
+        />
+
+        <select
+          value={status}
+          onChange={(e) => set({ status: e.target.value })}
+          style={inputStyle}
+        >
+          <option value="">Durum (hepsi)</option>
+          <option value="planned">Planlandı</option>
+          <option value="done">Tamamlandı</option>
+          <option value="missed">Kaçırıldı</option>
+        </select>
+
+        <input
+          placeholder="Ara (ad, kod, not)"
+          value={q}
+          onChange={(e) => set({ q: e.target.value })}
+          style={{ ...inputStyle, minWidth: 220 }}
+        />
+
+        <label style={{ fontSize: 12, opacity: 0.7 }}>Sırala:</label>
+        <select
+          value={order}
+          onChange={(e) => set({ order: e.target.value, offset: 0 })}
+          style={inputStyle}
+        >
+          <option value="date">Tarih</option>
+          <option value="-date">Tarih (ters)</option>
+          <option value="employee_name">Personel (A→Z)</option>
+          <option value="-employee_name">Personel (Z→A)</option>
+          <option value="-duration_sec">Süre (uzun→kısa)</option>
+          <option value="duration_sec">Süre (kısa→uzun)</option>
+          <option value="status">Durum</option>
+        </select>
+
+        <label style={{ fontSize: 12, opacity: 0.7 }}>Sayfa boyutu:</label>
+        <select
+          value={String(limit)}
+          onChange={(e) => set({ limit: Number(e.target.value), offset: 0 })}
+          style={inputStyle}
+        >
+          {[25, 50, 100, 250].map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
       </div>
 
-      {(err||msg) && <div style={{ position:"fixed", right:16, bottom:16, padding:"8px 10px", borderRadius:10, background: err?"#fee2e2":"#dcfce7", color: err?"#7f1d1d":"#065f46" }}>{err||msg}</div>}
+      {loading && <Loading />}
+      {err && <Alert variant="error" title="Vardiyalar yüklenemedi">{err}</Alert>}
+
+      <Table columns={columns} data={rows} />
+
+      {/* Sayfalama */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+        <button
+          disabled={!hasPrev}
+          onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })}
+          style={navBtnStyle(!hasPrev)}
+        >
+          ◀ Önceki
+        </button>
+        <button
+          disabled={!hasNext}
+          onClick={() => hasNext && set({ offset: offset + limit })}
+          style={navBtnStyle(!hasNext)}
+        >
+          Sonraki ▶
+        </button>
+        <div style={{ marginLeft: 8, opacity: 0.7 }}>
+          Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}
+        </div>
+      </div>
     </div>
   );
+}
+
+const inputStyle: React.CSSProperties = {
+  padding: "6px 8px",
+  border: "1px solid #ddd",
+  borderRadius: 8,
+  background: "#fff",
+};
+
+function navBtnStyle(disabled: boolean): React.CSSProperties {
+  return {
+    padding: "6px 10px",
+    border: "1px solid #ddd",
+    borderRadius: 8,
+    background: disabled ? "#f1f1f1" : "#f7f7f7",
+    cursor: disabled ? "default" : "pointer",
+  };
 }
