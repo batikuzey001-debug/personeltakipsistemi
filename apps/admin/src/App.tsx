@@ -12,17 +12,20 @@ import EmployeeProfile from "./pages/EmployeeProfile";
 import Layout from "./components/Layout";
 import { RequireRole } from "./lib/auth";
 
-// Yeni konsolide sayfalar
+// Konsolide sayfalar
 import Reports from "./pages/Reports";
 import Personel from "./pages/Personel";
 
-// Eski ama kullanılan bağımsız ekranlar
+// Bağımsız modüller
 import AdminTasks from "./pages/AdminTasks";
 import AdminTaskTemplates from "./pages/AdminTaskTemplates";
 import AdminBotSettings from "./pages/AdminBotSettings";
 import Notifications from "./pages/Notifications";
 import ShiftPlanner from "./pages/ShiftPlanner";
 import LivechatMissed from "./pages/LivechatMissed";
+
+// Teşhis sayfası (geçici/opsiyonel)
+import Diag from "./pages/Diag";
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
   constructor(props: { children: React.ReactNode }) {
@@ -211,10 +214,20 @@ export default function App() {
           }
         />
 
+        {/* Teşhis (geçici) */}
+        <Route
+          path="/diag"
+          element={
+            <Protected>
+              <Layout>
+                <Diag />
+              </Layout>
+            </Protected>
+          }
+        />
+
         {/* Profil ekranını eski rotalardan da destekle */}
-        {/* /employee-detail => profile sekmesine yönlendir */}
         <Route path="/employee-detail" element={<Navigate to="/personel?tab=profile" replace />} />
-        {/* /employees/:employee_id => profile sekmesine & id paramıyla yönlendir */}
         <Route path="/employees/:employee_id" element={<EmployeeIdRedirect />} />
 
         {/* Legacy yönlendirmeler */}
