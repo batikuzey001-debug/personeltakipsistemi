@@ -1,5 +1,5 @@
 // apps/admin/src/pages/EmployeeProfile.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { api, ApiListResponse } from "../lib/api";
 import Loading from "../components/Loading";
@@ -7,36 +7,37 @@ import Alert from "../components/Alert";
 import Table, { Column } from "../components/Table";
 import ExportCSVButton from "../components/ExportCSVButton";
 import { formatPercent, formatSecondsToMmSs, formatTL } from "../lib/format";
+import { deptLabels, roleLabels, labelOf } from "../lib/labels";
 
 type Employee = {
   id: number;
-  code: string;          // "RD-001"
-  name: string;          // "İlker"
-  dept: string;          // "livechat" | "bonus" | "finance" | "admin" | "other"
-  role: string;          // "super_admin" | "admin" | "viewer" | "employee"
-  status: string;        // "active" | "passive" | ...
-  created_at?: string;   // ISO
-  last_active_at?: string; // ISO
+  code: string;
+  name: string;
+  dept: string;
+  role: string;
+  status: string;
+  created_at?: string;
+  last_active_at?: string;
   [k: string]: any;
 };
 
 type StatKpis = {
-  range_from?: string;   // YYYY-MM-DD
-  range_to?: string;     // YYYY-MM-DD
+  range_from?: string;
+  range_to?: string;
   handled_count?: number;
   missed_count?: number;
   avg_first_sec?: number;
   avg_close_sec?: number;
-  availability_rate?: number; // 0..1 veya 0..100
-  approve_rate?: number;      // bonus/finance senaryoları için
+  availability_rate?: number;
+  approve_rate?: number;
   reject_rate?: number;
-  total_amount?: number;      // finans/bonus toplam
+  total_amount?: number;
   avg_amount?: number;
   [k: string]: any;
 };
 
 type EventRow = {
-  ts?: string; // ISO
+  ts?: string;
   type?: string;
   message?: string;
   correlation_id?: string;
@@ -71,20 +72,6 @@ function isoToLocal(iso?: string) {
   }
 }
 
-const labelDept: Record<string, string> = {
-  livechat: "LiveChat",
-  bonus: "Bonus",
-  finance: "Finans",
-  admin: "Admin",
-  other: "Diğer",
-};
-const labelRole: Record<string, string> = {
-  super_admin: "Super Admin",
-  admin: "Admin",
-  viewer: "Görüntüleyici",
-  employee: "Personel",
-};
-
 export default function EmployeeProfile() {
   const { id: idFromUrl, code: codeFromUrl } = useEmployeeIdentifier();
 
@@ -100,7 +87,7 @@ export default function EmployeeProfile() {
   const [evErr, setEvErr] = useState<string | null>(null);
   const [events, setEvents] = useState<ApiListResponse<EventRow> | null>(null);
 
-  // 1) Çalışanı bul: id varsa onunla, yoksa code ile
+  // 1) Çalışan
   useEffect(() => {
     let mounted = true;
     async function run() {
@@ -108,12 +95,9 @@ export default function EmployeeProfile() {
       setLoadingEmp(true);
       setEmpErr(null);
       try {
-        let emp: Employee;
-        if (idFromUrl) {
-          emp = await api.get<Employee>(PATH_EMP(idFromUrl));
-        } else {
-          emp = await api.get<Employee>(PATH_EMP_BY_CODE(codeFromUrl!));
-        }
+        const emp: Employee = idFromUrl
+          ? await api.get<Employee>(PATH_EMP(idFromUrl))
+          : await api.get<Employee>(PATH_EMP_BY_CODE(codeFromUrl!));
         if (!mounted) return;
         setEmployee(emp);
       } catch (e: any) {
@@ -124,14 +108,12 @@ export default function EmployeeProfile() {
       }
     }
     run();
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, [idFromUrl, codeFromUrl]);
 
   const empId = employee?.id;
 
-  // 2) KPI istatistikleri (son 7 gün varsayılan; backend destekliyorsa from/to ekleyebiliriz)
+  // 2) KPI
   useEffect(() => {
     let mounted = true;
     async function run() {
@@ -139,10 +121,7 @@ export default function EmployeeProfile() {
       setLoadingStats(true);
       setStatsErr(null);
       try {
-        const s = await api.get<StatKpis>(PATH_STATS(empId), {
-          // İleride rapor filtreleriyle eşleşecek şekilde from/to geçilebilir
-          tz: "Europe/Istanbul",
-        });
+        const s = await api.get<StatKpis>(PATH_STATS(empId), { tz: "Europe/Istanbul" });
         if (!mounted) return;
         setStats(s);
       } catch (e: any) {
@@ -153,12 +132,10 @@ export default function EmployeeProfile() {
       }
     }
     run();
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, [empId]);
 
-  // 3) Son olaylar (limitli liste)
+  // 3) Olaylar
   const [limit, setLimit] = useState(50);
   const [offset, setOffset] = useState(0);
   useEffect(() => {
@@ -169,10 +146,7 @@ export default function EmployeeProfile() {
       setEvErr(null);
       try {
         const resp = await api.get<ApiListResponse<EventRow>>(PATH_EVENTS(empId), {
-          limit,
-          offset,
-          order: "-ts",
-          tz: "Europe/Istanbul",
+          limit, offset, order: "-ts", tz: "Europe/Istanbul",
         });
         if (!mounted) return;
         setEvents(resp);
@@ -184,9 +158,7 @@ export default function EmployeeProfile() {
       }
     }
     run();
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, [empId, limit, offset]);
 
   const columns: Column<EventRow>[] = [
@@ -209,7 +181,6 @@ export default function EmployeeProfile() {
   const hasPrev = offset > 0;
   const hasNext = offset + limit < evTotal;
 
-  // Boş durumda kullanıcıyı Liste sekmesine yönlendirelim
   if (!idFromUrl && !codeFromUrl) {
     return (
       <div>
@@ -242,8 +213,8 @@ export default function EmployeeProfile() {
           >
             <Field label="Ad Soyad" value={employee.name} />
             <Field label="Kod" value={employee.code} />
-            <Field label="Departman" value={labelDept[employee.dept] || employee.dept} />
-            <Field label="Rol" value={labelRole[employee.role] || employee.role} />
+            <Field label="Departman" value={labelOf(deptLabels, employee.dept)} />
+            <Field label="Rol" value={labelOf(roleLabels, employee.role)} />
             <Field label="Durum" value={employee.status} />
             <Field label="Oluşturulma" value={isoToLocal(employee.created_at)} />
             <Field label="Son Aktivite" value={isoToLocal(employee.last_active_at)} />
@@ -257,23 +228,11 @@ export default function EmployeeProfile() {
         {loadingStats && <Loading label="KPI'lar yükleniyor…" />}
         {statsErr && <Alert variant="error" title="KPI alınamadı">{statsErr}</Alert>}
         {stats && (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
-              gap: 10,
-            }}
-          >
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 10 }}>
             <Kpi title="Sonuçlanan" value={stats.handled_count ?? 0} />
             <Kpi title="Kaçırılan" value={stats.missed_count ?? 0} />
-            <Kpi
-              title="Ø İlk Yanıt"
-              value={stats.avg_first_sec != null ? formatSecondsToMmSs(stats.avg_first_sec) : ""}
-            />
-            <Kpi
-              title="Ø Sonuçlandırma"
-              value={stats.avg_close_sec != null ? formatSecondsToMmSs(stats.avg_close_sec) : ""}
-            />
+            <Kpi title="Ø İlk Yanıt" value={stats.avg_first_sec != null ? formatSecondsToMmSs(stats.avg_first_sec) : ""} />
+            <Kpi title="Ø Sonuçlandırma" value={stats.avg_close_sec != null ? formatSecondsToMmSs(stats.avg_close_sec) : ""} />
             <Kpi title="Ulaşılabilirlik" value={formatPercent(stats.availability_rate)} />
             <Kpi title="Onay Oranı" value={formatPercent(stats.approve_rate)} />
             <Kpi title="Ret Oranı" value={formatPercent(stats.reject_rate)} />
@@ -299,20 +258,8 @@ export default function EmployeeProfile() {
         {evErr && <Alert variant="error" title="Olaylar alınamadı">{evErr}</Alert>}
         <Table columns={columns} data={evRows} />
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
-          <button
-            disabled={!hasPrev}
-            onClick={() => hasPrev && setOffset(Math.max(0, offset - limit))}
-            style={navBtnStyle(!hasPrev)}
-          >
-            ◀ Önceki
-          </button>
-          <button
-            disabled={!hasNext}
-            onClick={() => hasNext && setOffset(offset + limit)}
-            style={navBtnStyle(!hasNext)}
-          >
-            Sonraki ▶
-          </button>
+          <button disabled={!hasPrev} onClick={() => hasPrev && setOffset(Math.max(0, offset - limit))} style={navBtnStyle(!hasPrev)}>◀ Önceki</button>
+          <button disabled={!hasNext} onClick={() => hasNext && setOffset(offset + limit)} style={navBtnStyle(!hasNext)}>Sonraki ▶</button>
           <div style={{ marginLeft: 8, opacity: 0.7 }}>
             Toplam: {evTotal} • Gösterilen: {evRows.length} • Offset: {offset}
           </div>
@@ -320,22 +267,10 @@ export default function EmployeeProfile() {
             <label style={{ fontSize: 12, opacity: 0.7, marginRight: 6 }}>Sayfa boyutu:</label>
             <select
               value={String(limit)}
-              onChange={(e) => {
-                setOffset(0);
-                setLimit(Number(e.target.value));
-              }}
-              style={{
-                padding: "6px 8px",
-                border: "1px solid #ddd",
-                borderRadius: 8,
-                background: "#fff",
-              }}
+              onChange={(e) => { setOffset(0); setLimit(Number(e.target.value)); }}
+              style={{ padding: "6px 8px", border: "1px solid #ddd", borderRadius: 8, background: "#fff" }}
             >
-              {[25, 50, 100, 250].map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
+              {[25, 50, 100, 250].map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </div>
         </div>
@@ -346,15 +281,7 @@ export default function EmployeeProfile() {
 
 function Field({ label, value }: { label: string; value?: React.ReactNode }) {
   return (
-    <div
-      style={{
-        border: "1px solid #eee",
-        borderRadius: 10,
-        padding: 10,
-        background: "#fafafa",
-        minHeight: 56,
-      }}
-    >
+    <div style={{ border: "1px solid #eee", borderRadius: 10, padding: 10, background: "#fafafa", minHeight: 56 }}>
       <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>{label}</div>
       <div style={{ fontWeight: 700 }}>{value ?? ""}</div>
     </div>
@@ -363,15 +290,7 @@ function Field({ label, value }: { label: string; value?: React.ReactNode }) {
 
 function Kpi({ title, value }: { title: string; value?: React.ReactNode }) {
   return (
-    <div
-      style={{
-        border: "1px solid #eee",
-        borderRadius: 12,
-        padding: 12,
-        background: "#fff",
-        minHeight: 72,
-      }}
-    >
+    <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12, background: "#fff", minHeight: 72 }}>
       <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>{title}</div>
       <div style={{ fontSize: 20, fontWeight: 900 }}>{value ?? "-"}</div>
     </div>
