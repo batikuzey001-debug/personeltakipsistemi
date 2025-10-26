@@ -1,69 +1,51 @@
 // apps/admin/src/pages/Employees.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiListResponse } from "../lib/api";
 import Table, { Column } from "../components/Table";
 import ExportCSVButton from "../components/ExportCSVButton";
 import Loading from "../components/Loading";
 import Alert from "../components/Alert";
+import { deptLabels, roleLabels, statusLabels, labelOf } from "../lib/labels";
+import { formatDateTime } from "../lib/format";
 
 type EmployeeRow = {
   id?: number;
-  code?: string;           // "RD-001"
-  name?: string;           // "İlker"
-  dept?: string;           // "bonus" | "finance" | "livechat" | "admin" | "other"
-  role?: string;           // "super_admin" | "admin" | "viewer" | "employee"
-  status?: string;         // "active" | "passive" | ...
-  created_at?: string;     // ISO
-  last_active_at?: string; // ISO (opsiyonel)
+  code?: string;
+  name?: string;
+  dept?: string;
+  role?: string;
+  status?: string;
+  created_at?: string;
+  last_active_at?: string;
   [k: string]: any;
 };
 
-// Backend uç adresin farklıysa değiştir:
 const PATH = "/employees";
 
 function useQueryDefaults() {
   const [params, setParams] = useSearchParams();
-
-  const order = params.get("order") || "name";     // varsayılan ada göre
+  const order = params.get("order") || "name";
   const limit = Number(params.get("limit") || 50);
   const offset = Number(params.get("offset") || 0);
   const q = params.get("q") || "";
   const dept = params.get("dept") || "";
   const role = params.get("role") || "";
   const status = params.get("status") || "";
-
   const set = (patch: Record<string, string | number | undefined>) => {
     const next = new URLSearchParams(params);
     Object.entries(patch).forEach(([k, v]) => {
       if (v == null || v === "") next.delete(k);
       else next.set(k, String(v));
     });
-    // filtre değişince sayfayı başa al
-    if ("q" in patch || "dept" in patch || "role" in patch || "status" in patch) {
-      next.set("offset", "0");
-    }
+    if ("q" in patch || "dept" in patch || "role" in patch || "status" in patch) next.set("offset", "0");
     setParams(next, { replace: true });
   };
-
   return { order, limit, offset, q, dept, role, status, set };
-}
-
-function isoToLocal(iso?: string) {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    const date = d.toLocaleDateString("tr-TR");
-    const time = d.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
-    return `${date} ${time}`;
-  } catch {
-    return iso;
-  }
 }
 
 export default function Employees() {
   const { order, limit, offset, q, dept, role, status, set } = useQueryDefaults();
-
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [data, setData] = useState<ApiListResponse<EmployeeRow> | null>(null);
@@ -93,16 +75,31 @@ export default function Employees() {
   const columns: Column<EmployeeRow>[] = [
     { key: "name", header: "Ad Soyad" },
     { key: "code", header: "Kod", width: 100 },
-    { key: "dept", header: "Departman", width: 120 },
-    { key: "role", header: "Rol", width: 140 },
-    { key: "status", header: "Durum", width: 110 },
+    {
+      key: "dept",
+      header: "Departman",
+      width: 120,
+      render: (r) => labelOf(deptLabels, r.dept),
+    },
+    {
+      key: "role",
+      header: "Rol",
+      width: 140,
+      render: (r) => labelOf(roleLabels, r.role),
+    },
+    {
+      key: "status",
+      header: "Durum",
+      width: 110,
+      render: (r) => labelOf(statusLabels, r.status),
+    },
     ...(data?.rows?.some((r) => r.last_active_at)
       ? [
           {
             key: "last_active_at",
             header: "Son Aktivite",
             width: 180,
-            render: (r: EmployeeRow) => (r.last_active_at ? isoToLocal(r.last_active_at) : ""),
+            render: (r: EmployeeRow) => formatDateTime(r.last_active_at),
           } as Column<EmployeeRow>,
         ]
       : []),
@@ -112,7 +109,7 @@ export default function Employees() {
             key: "created_at",
             header: "Oluşturulma",
             width: 180,
-            render: (r: EmployeeRow) => (r.created_at ? isoToLocal(r.created_at) : ""),
+            render: (r: EmployeeRow) => formatDateTime(r.created_at),
           } as Column<EmployeeRow>,
         ]
       : []),
@@ -143,25 +140,25 @@ export default function Employees() {
 
         <select value={dept} onChange={(e) => set({ dept: e.target.value })} style={inputStyle}>
           <option value="">Departman (hepsi)</option>
-          <option value="livechat">LiveChat</option>
-          <option value="bonus">Bonus</option>
-          <option value="finance">Finans</option>
-          <option value="admin">Admin</option>
-          <option value="other">Diğer</option>
+          <option value="livechat">{deptLabels.livechat}</option>
+          <option value="bonus">{deptLabels.bonus}</option>
+          <option value="finance">{deptLabels.finance}</option>
+          <option value="admin">{deptLabels.admin}</option>
+          <option value="other">{deptLabels.other}</option>
         </select>
 
         <select value={role} onChange={(e) => set({ role: e.target.value })} style={inputStyle}>
           <option value="">Rol (hepsi)</option>
-          <option value="super_admin">Super Admin</option>
-          <option value="admin">Admin</option>
-          <option value="viewer">Görüntüleyici</option>
-          <option value="employee">Personel</option>
+          <option value="super_admin">{roleLabels.super_admin}</option>
+          <option value="admin">{roleLabels.admin}</option>
+          <option value="viewer">{roleLabels.viewer}</option>
+          <option value="employee">{roleLabels.employee}</option>
         </select>
 
         <select value={status} onChange={(e) => set({ status: e.target.value })} style={inputStyle}>
-          <option value="">Durum (hepsi)</option>
-          <option value="active">Aktif</option>
-          <option value="passive">Pasif</option>
+          <option value="">{statusLabels[""] ?? "Durum (hepsi)"}</option>
+          <option value="active">{statusLabels.active}</option>
+          <option value="passive">{statusLabels.passive}</option>
         </select>
 
         <label style={{ fontSize: 12, opacity: 0.7 }}>Sırala:</label>
