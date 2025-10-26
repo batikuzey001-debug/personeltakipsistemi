@@ -239,3 +239,102 @@ async def missed_details(
             if len(rows) >= limit:
                 break
     return {"date": date[:10], "agent": agent, "count": len(rows), "rows": rows}
+
+# ------------------------ ÇALIŞAN BAZLI GÜNLÜK RAPOR (v3.6) ------------------------
+from sqlalchemy import text as _sqltext
+from app.db.session import engine as _eng
+
+@router.get("/daily/employee/{employee_id}")
+async def daily_employee(
+    employee_id: str,
+    date: str = Query(..., description="YYYY-MM-DD (Europe/Istanbul)"),
+):
+    # 1) Çalışanın LiveChat e-postasını DB'den al
+    with _eng.begin() as conn:
+        row = conn.execute(
+            _sqltext("SELECT livechat_email FROM employees WHERE employee_id=:eid"),
+            {"eid": employee_id},
+        ).first()
+    email = (row and row[0]) or None
+    if not email:
+        raise HTTPException(400, f"livechat_email not set for employee_id={employee_id}")
+
+    # 2) Gün aralığı (IST offset ile)
+    fr, to = _day_ist(date)
+
+    async with httpx.AsyncClient(timeout=60) as c:
+        # Performans (tek ajan)
+        pb = {
+            "distribution": "day",
+            "filters": {"from": fr, "to": to, "agents": {"values": [email]}},
+            "timezone": "Europe/Istanbul",
+        }
+        r1 = await c.post(f"{LC}/reports/agents/performance", headers=HDR, json=pb); r1.raise_for_status()
+        perf_all = (r1.json() or {}).get("records") or {}
+        perf = perf_all.get(email, {}) if isinstance(perf_all, dict) else {}
+
+        # Rating (tek ajan)
+        rb = {
+            "filters": {"from": fr, "to": to, "agents": {"values": [email]}},
+            "timezone": "Europe/Istanbul",
+        }
+        r2 = await c.post(f"{LC}/reports/chats/ranking", headers=HDR, json=rb); r2.raise_for_status()
+        rank_all = (r2.json() or {}).get("records") or {}
+        rank = rank_all.get(email, {}) if isinstance(rank_all, dict) else {}
+
+        # Transfer-out (tek ajan)
+        tb = {
+            "distribution": "day",
+            "filters": {
+                "from": fr, "to": to,
+                "event_types": {"values": ["chat_transferred"]},
+                "agents": {"values": [email]},
+            },
+            "timezone": "Europe/Istanbul",
+        }
+        r3 = await c.post(f"{LC}/reports/chats/total_chats", headers=HDR, json=tb)
+        tr_out = 0
+        if r3.status_code == 200:
+            j3 = r3.json() or {}
+            if isinstance(j3.get("total"), (int, float)):
+                tr_out = int(j3["total"])
+            else:
+                recs = j3.get("records") or {}
+                if isinstance(recs, dict):
+                    tr_out = sum(int((v or {}).get("total") or 0) for v in recs.values())
+
+        # ART (tek ajan)
+        art = await _agent_art(c, fr, to, email)
+
+    # 3) Hesapla ve dön
+    chats = int(perf.get("chats_count") or 0)
+    fr_chats = int(perf.get("first_response_chats_count") or perf.get("first_response_count") or 0)
+    missed = max(chats - fr_chats, 0)
+    frt = perf.get("first_response_time")
+    chat_sec = int(perf.get("chatting_time") or 0)
+    aht = (chat_sec / chats) if chats else None
+    li, ac, nac = int(perf.get("logged_in_time") or 0), int(perf.get("accepting_chats_time") or 0), int(perf.get("not_accepting_chats_time") or 0)
+    good, bad, tot = rank.get("good"), rank.get("bad"), rank.get("total")
+    csat = (float(good) / float(tot) * 100.0) if isinstance(good, (int,float)) and isinstance(tot, (int,float)) and tot else None
+
+    return {
+        "date": date[:10],
+        "employee_id": employee_id,
+        "agent_email": email,
+        "kpi": {
+            "total_chats": chats,
+            "frt_sec": frt if isinstance(frt, (int, float)) else None,
+            "art_sec": art,
+            "aht_sec": aht if isinstance(aht, (int, float)) else None,
+            "csat_percent": round(csat, 2) if isinstance(csat, (int, float)) else None,
+            "csat_good": good if isinstance(good, (int, float)) else None,
+            "csat_bad": bad if isinstance(bad, (int, float)) else None,
+            "csat_total": tot if isinstance(tot, (int, float)) else None,
+            "logged_in_hours": round(li/3600, 2) if li else 0,
+            "accepting_hours": round(ac/3600, 2) if ac else 0,
+            "not_accepting_hours": round(nac/3600, 2) if nac else 0,
+            "chatting_hours": round(chat_sec/3600, 2) if chat_sec else 0,
+            "transfer_out": tr_out,
+            "missed_chats": missed,
+        }
+    }
