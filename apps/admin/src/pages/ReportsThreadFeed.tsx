@@ -6,6 +6,7 @@ import Table, { Column } from "../components/Table";
 import ExportCSVButton from "../components/ExportCSVButton";
 import Loading from "../components/Loading";
 import Alert from "../components/Alert";
+import { useColumnVisibility, ColumnVisibilityControls } from "../components/ColumnVisibility";
 
 type ThreadRow = {
   ts?: string;
@@ -25,8 +26,7 @@ const PATH = "/reports/thread-feed";
 function useQueryDefaults() {
   const [params, setParams] = useSearchParams();
   const today = useMemo(() => new Date(), []);
-  const toStr = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const toStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
   const defaultFrom = useMemo(() => { const a = new Date(today); a.setDate(a.getDate() - 1); return toStr(a); }, [today]);
   const defaultTo = useMemo(() => toStr(today), [today]);
   const from = params.get("from") || defaultFrom;
@@ -90,6 +90,11 @@ export default function ReportsThreadFeed() {
     { key: "correlation_id", header: "Korelasyon", render: (r) => <span style={{ opacity: 0.8 }}>{shortId(r.correlation_id)}</span>, width: 140 },
   ];
 
+  const storageKey = "cols:reports:thread-feed";
+  const allKeys = columns.map((c) => String(c.key));
+  const { visible, toggle, showAll, hideAll } = useColumnVisibility(allKeys, storageKey);
+  const visibleColumns = columns.filter((c) => visible[String(c.key)] !== false);
+
   const rows = data?.rows || [];
   const total = data?.total || 0;
   const hasPrev = offset > 0;
@@ -100,6 +105,13 @@ export default function ReportsThreadFeed() {
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
         <strong>Aralık:</strong><span>{from} → {to}</span>
         <div style={{ flex: 1 }} />
+        <ColumnVisibilityControls
+          columns={columns.map((c) => ({ key: String(c.key), header: c.header }))}
+          visible={visible}
+          toggle={toggle}
+          showAll={showAll}
+          hideAll={hideAll}
+        />
         <ExportCSVButton filename={`thread-feed_${from}_${to}`} rows={rows} />
       </div>
 
@@ -133,13 +145,11 @@ export default function ReportsThreadFeed() {
       {loading && <Loading />}
       {err && <Alert variant="error" title="Rapor yüklenemedi">{err}</Alert>}
 
-      <Table columns={columns} data={rows} />
+      <Table columns={visibleColumns} data={rows} />
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
-        <button disabled={!hasPrev} onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })}
-          style={navBtnStyle(!hasPrev)}>◀ Önceki</button>
-        <button disabled={!hasNext} onClick={() => hasNext && set({ offset: offset + limit })}
-          style={navBtnStyle(!hasNext)}>Sonraki ▶</button>
+        <button disabled={!hasPrev} onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })} style={navBtnStyle(!hasPrev)}>◀ Önceki</button>
+        <button disabled={!hasNext} onClick={() => hasNext && set({ offset: offset + limit })} style={navBtnStyle(!hasNext)}>Sonraki ▶</button>
         <div style={{ marginLeft: 8, opacity: 0.7 }}>
           Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}
         </div>
@@ -156,11 +166,5 @@ const inputStyle: React.CSSProperties = {
 };
 
 function navBtnStyle(disabled: boolean): React.CSSProperties {
-  return {
-    padding: "6px 10px",
-    border: "1px solid #ddd",
-    borderRadius: 8,
-    background: disabled ? "#f1f1f1" : "#f7f7f7",
-    cursor: disabled ? "default" : "pointer",
-  };
+  return { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 8, background: disabled ? "#f1f1f1" : "#f7f7f7", cursor: "default" };
 }
