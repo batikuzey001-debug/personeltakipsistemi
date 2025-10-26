@@ -1,6 +1,6 @@
 # apps/api/app/main.py
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
@@ -48,7 +48,7 @@ try:
 except Exception as e:
     print(f"[livechat] router not loaded: {e}")
 
-# ⬇️ LIVECHAT RAPOR router (opsiyonel)
+# ⬇️ LIVECHAT RAPOR router (opsiyonel) — bazı projelerde /report prefiksiyle geliyor
 _livechat_report_router = None
 try:
     from app.api.routes_livechat_report import router as livechat_report_router
@@ -91,7 +91,7 @@ MIGRATIONS_SQL = [
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS phone VARCHAR(32);",
     "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS salary_gross NUMERIC;",
-    "ALTER TABLE IF NOT EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
+    "ALTER TABLE IF EXISTS employees ADD COLUMN IF NOT EXISTS notes TEXT;",
 
     "DO $$ BEGIN "
     "  IF EXISTS (SELECT 1 FROM information_schema.columns "
@@ -193,43 +193,69 @@ def run_startup_migrations():
 def healthz():
     return {"ok": True}
 
+# /health alias (frontend veya izleme araçları için yaygın)
+@app.get("/health")
+def health():
+    return {"ok": True}
+
 @app.get("/_routes")
 def list_routes():
     return sorted({f"{getattr(r, 'methods', {'GET'})} {getattr(r, 'path', getattr(r, 'path_regex', ''))}" for r in app.router.routes})
 
-# Router kayıtları
-app.include_router(auth_router)
-app.include_router(org_router)
-app.include_router(seed_router)
-app.include_router(users_router)
-app.include_router(telegram_router)
-app.include_router(debug_router)
-app.include_router(jobs_router)
-app.include_router(identities_router)
-app.include_router(employee_view_router)
-app.include_router(reports_router)
-app.include_router(admin_tasks_router)
-app.include_router(admin_bot_router)
-app.include_router(admin_notify_router)
+# -------- Router kayıtları (tek yerden prefix kontrolü) --------
+API_PREFIX = os.getenv("API_PREFIX", "").rstrip("/")  # örn: "/api" veya ""
 
-# ⬇️ EKLENENLER
-app.include_router(shifts_router)                # /shifts
-app.include_router(shift_assignments_router)     # /shift-assignments
-app.include_router(shift_weeks_router)           # /shift-weeks
+def pref(s: str) -> str:
+    """Global API_PREFIX ile path birleştirir."""
+    if not s:
+        return API_PREFIX or ""
+    if API_PREFIX:
+        return f"{API_PREFIX}{s}"
+    return s
+
+# Tüm router’ları tek APIRouter altında topla (global prefix uygula)
+api_root = APIRouter(prefix=API_PREFIX or "")
+
+# Çekirdek/ortak
+api_root.include_router(auth_router)
+api_root.include_router(org_router)
+api_root.include_router(seed_router)
+api_root.include_router(users_router)
+api_root.include_router(telegram_router)
+api_root.include_router(debug_router)
+api_root.include_router(jobs_router)
+api_root.include_router(identities_router)        # /identities
+api_root.include_router(employee_view_router)     # /employees
+api_root.include_router(reports_router)           # /reports
+api_root.include_router(admin_tasks_router)
+api_root.include_router(admin_bot_router)
+api_root.include_router(admin_notify_router)
+
+# Shifts
+api_root.include_router(shifts_router)                # /shifts
+api_root.include_router(shift_assignments_router)     # /shift-assignments
+api_root.include_router(shift_weeks_router)           # /shift-weeks
+
+# Livechat keşif (kendi prefix'ini içerir)
 if _livechat_router:
     print("[livechat] router included at /livechat")
-    app.include_router(_livechat_router)         # /livechat
+    api_root.include_router(_livechat_router)         # /livechat
 else:
     print("[livechat] router missing")
 
+# Livechat rapor/supervise router’ları bazı repo’larda /report altında tanımlı olabiliyor.
+# Frontend /reports/* beklediği için burada NORMALİZE ediyoruz.
 if _livechat_report_router:
-    print("[livechat-report] router included at /report")
-    app.include_router(_livechat_report_router)  # /report/*
+    print("[livechat-report] router included at /reports")
+    api_root.include_router(_livechat_report_router, prefix="/reports")   # /reports/*
 else:
     print("[livechat-report] router missing")
 
 if _livechat_supervise_router:
-    print("[livechat-supervise] router included at /report")
-    app.include_router(_livechat_supervise_router)  # /report/supervise
+    print("[livechat-supervise] router included at /reports")
+    api_root.include_router(_livechat_supervise_router, prefix="/reports")  # /reports/supervise
 else:
     print("[livechat-supervise] router missing")
+
+# Ana uygulamaya tek seferde ekle
+app.include_router(api_root)
