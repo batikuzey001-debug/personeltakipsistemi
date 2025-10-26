@@ -1,9 +1,35 @@
-import React, { useState, ReactNode } from "react";
+// apps/admin/src/components/Tabs.tsx
+import React, { ReactNode, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 type Tab = { key: string; label: string; content: ReactNode };
 
-export default function Tabs({ tabs, initialKey }: { tabs: Tab[]; initialKey?: string }) {
-  const [active, setActive] = useState<string>(initialKey || tabs[0]?.key || "");
+export default function Tabs({
+  tabs,
+  initialKey,
+  queryKey = "tab",
+}: {
+  tabs: Tab[];
+  initialKey?: string;
+  queryKey?: string; // URL'de kullanılacak anahtar (varsayılan 'tab')
+}) {
+  const [params, setParams] = useSearchParams();
+  const tabFromUrl = params.get(queryKey || "tab") || "";
+  const firstKey = useMemo(() => tabs[0]?.key || "", [tabs]);
+  const [active, setActive] = useState<string>(tabFromUrl || initialKey || firstKey);
+
+  useEffect(() => {
+    // URL dışarıdan değişirse aktif tab'ı güncelle
+    if (tabFromUrl && tabFromUrl !== active) setActive(tabFromUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabFromUrl]);
+
+  const onChange = (key: string) => {
+    setActive(key);
+    const next = new URLSearchParams(params);
+    if (key) next.set(queryKey, key);
+    setParams(next, { replace: true });
+  };
 
   return (
     <div>
@@ -11,7 +37,7 @@ export default function Tabs({ tabs, initialKey }: { tabs: Tab[]; initialKey?: s
         {tabs.map((t) => (
           <button
             key={t.key}
-            onClick={() => setActive(t.key)}
+            onClick={() => onChange(t.key)}
             style={{
               padding: "8px 12px",
               border: "1px solid #ddd",
@@ -26,7 +52,6 @@ export default function Tabs({ tabs, initialKey }: { tabs: Tab[]; initialKey?: s
           </button>
         ))}
       </div>
-
       <div>{tabs.find((t) => t.key === active)?.content}</div>
     </div>
   );
