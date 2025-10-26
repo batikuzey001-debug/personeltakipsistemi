@@ -7,6 +7,7 @@ import ExportCSVButton from "../components/ExportCSVButton";
 import { formatSecondsToMmSs, formatPercent } from "../lib/format";
 import Loading from "../components/Loading";
 import Alert from "../components/Alert";
+import { useColumnVisibility, ColumnVisibilityControls } from "../components/ColumnVisibility";
 
 type AgentRow = {
   date?: string;
@@ -28,8 +29,7 @@ const PATH = "/reports/livechat/agents";
 function useQueryDefaults() {
   const [params, setParams] = useSearchParams();
   const today = useMemo(() => new Date(), []);
-  const toStr = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const toStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
   const defaultFrom = useMemo(() => { const a = new Date(today); a.setDate(a.getDate() - 6); return toStr(a); }, [today]);
   const defaultTo = useMemo(() => toStr(today), [today]);
   const from = params.get("from") || defaultFrom;
@@ -70,10 +70,13 @@ export default function LivechatAgentReport() {
     { key: "close_sec", header: "Ø Sonuçlandırma", render: (r) => r.close_sec != null ? formatSecondsToMmSs(r.close_sec) : "" },
     { key: "online_sec", header: "Online", render: (r) => r.online_sec != null ? formatSecondsToMmSs(r.online_sec) : "" },
     { key: "availability_rate", header: "Ulaşılabilirlik", render: (r) => <b style={{ color: "#0a7" }}>{formatPercent(r.availability_rate)}</b> },
-    ...(data?.rows?.some((r) => r.csat_rate != null)
-      ? [{ key: "csat_rate", header: "CSAT", render: (r: AgentRow) => <b>{formatPercent(r.csat_rate)}</b> } as Column<AgentRow>]
-      : []),
+    ...(data?.rows?.some((r) => r.csat_rate != null) ? [{ key: "csat_rate", header: "CSAT", render: (r: AgentRow) => <b>{formatPercent(r.csat_rate)}</b> } as Column<AgentRow>] : []),
   ];
+
+  const storageKey = "cols:reports:livechat-agents";
+  const allKeys = columns.map((c) => String(c.key));
+  const { visible, toggle, showAll, hideAll } = useColumnVisibility(allKeys, storageKey);
+  const visibleColumns = columns.filter((c) => visible[String(c.key)] !== false);
 
   const rows = data?.rows || [];
   const total = data?.total || 0;
@@ -82,9 +85,16 @@ export default function LivechatAgentReport() {
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
         <strong>Aralık:</strong><span>{from} → {to}</span>
         <div style={{ flex: 1 }} />
+        <ColumnVisibilityControls
+          columns={columns.map((c) => ({ key: String(c.key), header: c.header }))}
+          visible={visible}
+          toggle={toggle}
+          showAll={showAll}
+          hideAll={hideAll}
+        />
         <ExportCSVButton filename={`livechat-agents_${from}_${to}`} rows={rows} />
       </div>
 
@@ -112,27 +122,17 @@ export default function LivechatAgentReport() {
       {loading && <Loading />}
       {err && <Alert variant="error" title="Rapor yüklenemedi">{err}</Alert>}
 
-      <Table columns={columns} data={rows} />
+      <Table columns={visibleColumns} data={rows} />
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
-        <button disabled={!hasPrev} onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })}
-          style={navBtnStyle(!hasPrev)}>◀ Önceki</button>
-        <button disabled={!hasNext} onClick={() => hasNext && set({ offset: offset + limit })}
-          style={navBtnStyle(!hasNext)}>Sonraki ▶</button>
-        <div style={{ marginLeft: 8, opacity: 0.7 }}>
-          Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}
-        </div>
+        <button disabled={!hasPrev} onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })} style={navBtnStyle(!hasPrev)}>◀ Önceki</button>
+        <button disabled={!hasNext} onClick={() => hasNext && set({ offset: offset + limit })} style={navBtnStyle(!hasNext)}>Sonraki ▶</button>
+        <div style={{ marginLeft: 8, opacity: 0.7 }}>Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}</div>
       </div>
     </div>
   );
 }
 
 function navBtnStyle(disabled: boolean): React.CSSProperties {
-  return {
-    padding: "6px 10px",
-    border: "1px solid #ddd",
-    borderRadius: 8,
-    background: disabled ? "#f1f1f1" : "#f7f7f7",
-    cursor: disabled ? "default" : "pointer",
-  };
+  return { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 8, background: disabled ? "#f1f1f1" : "#f7f7f7", cursor: "default" };
 }
