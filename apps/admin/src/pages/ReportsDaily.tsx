@@ -6,6 +6,7 @@ import Table, { Column } from "../components/Table";
 import ExportCSVButton from "../components/ExportCSVButton";
 import Loading from "../components/Loading";
 import Alert from "../components/Alert";
+import { useColumnVisibility, ColumnVisibilityControls } from "../components/ColumnVisibility";
 
 type DailyRow = {
   date?: string;
@@ -24,11 +25,8 @@ const PATH = "/reports/daily";
 function useQueryDefaults() {
   const [params, setParams] = useSearchParams();
   const today = useMemo(() => new Date(), []);
-  const toStr = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const defaultFrom = useMemo(() => {
-    const a = new Date(today); a.setDate(a.getDate() - 6); return toStr(a);
-  }, [today]);
+  const toStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  const defaultFrom = useMemo(() => { const a = new Date(today); a.setDate(a.getDate() - 6); return toStr(a); }, [today]);
   const defaultTo = useMemo(() => toStr(today), [today]);
   const from = params.get("from") || defaultFrom;
   const to = params.get("to") || defaultTo;
@@ -65,24 +63,15 @@ export default function ReportsDaily() {
     { key: "employee_name", header: "Personel" },
     { key: "employee_code", header: "Kod" },
     { key: "total", header: "İşlem" },
-    {
-      key: "avg_first_sec", header: "Ø İlk Yanıt",
-      render: (r) => (r.avg_first_sec != null ? `${Math.round(r.avg_first_sec)} sn` : ""),
-    },
-    {
-      key: "avg_close_sec", header: "Ø Sonuçlandırma",
-      render: (r) => (r.avg_close_sec != null ? `${Math.round(r.avg_close_sec)} sn` : ""),
-    },
-    {
-      key: "trend", header: "Trend",
-      render: (r) =>
-        r.trend != null ? (
-          <span style={{ fontWeight: 700, color: r.trend >= 0 ? "#0a7" : "#c33" }}>
-            {r.trend > 0 ? "+" : ""}{r.trend}
-          </span>
-        ) : (""),
-    },
+    { key: "avg_first_sec", header: "Ø İlk Yanıt", render: (r) => r.avg_first_sec != null ? `${Math.round(r.avg_first_sec)} sn` : "" },
+    { key: "avg_close_sec", header: "Ø Sonuçlandırma", render: (r) => r.avg_close_sec != null ? `${Math.round(r.avg_close_sec)} sn` : "" },
+    { key: "trend", header: "Trend", render: (r) => r.trend != null ? (<span style={{ fontWeight: 700, color: r.trend >= 0 ? "#0a7" : "#c33" }}>{r.trend > 0 ? "+" : ""}{r.trend}</span>) : "" },
   ];
+
+  const storageKey = "cols:reports:daily";
+  const allKeys = columns.map((c) => String(c.key));
+  const { visible, toggle, showAll, hideAll } = useColumnVisibility(allKeys, storageKey);
+  const visibleColumns = columns.filter((c) => visible[String(c.key)] !== false);
 
   const rows = data?.rows || [];
   const total = data?.total || 0;
@@ -91,9 +80,16 @@ export default function ReportsDaily() {
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
         <strong>Aralık:</strong><span>{from} → {to}</span>
         <div style={{ flex: 1 }} />
+        <ColumnVisibilityControls
+          columns={columns.map((c) => ({ key: String(c.key), header: c.header }))}
+          visible={visible}
+          toggle={toggle}
+          showAll={showAll}
+          hideAll={hideAll}
+        />
         <ExportCSVButton filename={`gunluk-rapor_${from}_${to}`} rows={rows} />
       </div>
 
@@ -118,27 +114,17 @@ export default function ReportsDaily() {
       {loading && <Loading />}
       {err && <Alert variant="error" title="Rapor yüklenemedi">{err}</Alert>}
 
-      <Table columns={columns} data={rows} />
+      <Table columns={visibleColumns} data={rows} />
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
-        <button disabled={!hasPrev} onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })}
-          style={navBtnStyle(!hasPrev)}>◀ Önceki</button>
-        <button disabled={!hasNext} onClick={() => hasNext && set({ offset: offset + limit })}
-          style={navBtnStyle(!hasNext)}>Sonraki ▶</button>
-        <div style={{ marginLeft: 8, opacity: 0.7 }}>
-          Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}
-        </div>
+        <button disabled={!hasPrev} onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })} style={navBtnStyle(!hasPrev)}>◀ Önceki</button>
+        <button disabled={!hasNext} onClick={() => hasNext && set({ offset: offset + limit })} style={navBtnStyle(!hasNext)}>Sonraki ▶</button>
+        <div style={{ marginLeft: 8, opacity: 0.7 }}>Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}</div>
       </div>
     </div>
   );
 }
 
 function navBtnStyle(disabled: boolean): React.CSSProperties {
-  return {
-    padding: "6px 10px",
-    border: "1px solid #ddd",
-    borderRadius: 8,
-    background: disabled ? "#f1f1f1" : "#f7f7f7",
-    cursor: disabled ? "default" : "pointer",
-  };
+  return { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 8, background: disabled ? "#f1f1f1" : "#f7f7f7", cursor: disabled ? "default" : "pointer" };
 }
