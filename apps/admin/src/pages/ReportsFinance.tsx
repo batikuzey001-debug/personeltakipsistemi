@@ -1,153 +1,214 @@
-// apps/admin/src/pages/ReportFinanceClose.tsx
-import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+// apps/admin/src/pages/ReportsFinance.tsx
+import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { api, ApiListResponse } from "../lib/api";
+import Table, { Column } from "../components/Table";
+import ExportCSVButton from "../components/ExportCSVButton";
+import { formatPercent, formatTL } from "../lib/format";
 
-const API =
-  (import.meta.env.VITE_API_BASE_URL as string) ||
-  "https://personel-takip-api-production.up.railway.app";
-
-type Trend = { emoji: string; pct: number | null; team_avg_close_sec: number | null };
-type Row = {
-  employee_id: string;
-  full_name: string;
-  department: string;
-  count_total: number;          // İşlem Sayısı
-  avg_first_sec: number | null; // Ø İlk Yanıt (sn)
-  avg_close_sec: number;        // Ø Sonuçlandırma (sn)
-  trend: Trend;                 // ekip Ø her zaman son 7 gün
+type FinanceRow = {
+  date?: string;              // "2025-10-26"
+  employee_code?: string;     // "RD-202"
+  employee_name?: string;     // "Nehir"
+  dept?: string;              // "finance"
+  count?: number;             // işlem adedi
+  total_amount?: number;      // toplam tutar
+  avg_amount?: number;        // ortalama tutar
+  approve_rate?: number;      // 0..1 veya 0..100
+  reject_rate?: number;       // 0..1 veya 0..100
+  pending_count?: number;     // bekleyen işlem (opsiyon)
+  [k: string]: any;
 };
 
-async function apiGet<T>(path: string): Promise<T> {
-  const token = localStorage.getItem("token") || "";
-  const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!r.ok) throw new Error(await r.text());
-  return (await r.json()) as T;
+// Sende farklıysa değiştir:
+const PATH = "/reports/finance";
+
+function useQueryDefaults() {
+  const [params, setParams] = useSearchParams();
+
+  const today = useMemo(() => new Date(), []);
+  const toStr = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate()
+    ).padStart(2, "0")}`;
+
+  const defaultFrom = useMemo(() => {
+    const a = new Date(today);
+    a.setDate(a.getDate() - 6);
+    return toStr(a);
+  }, [today]);
+  const defaultTo = useMemo(() => toStr(today), [today]);
+
+  const from = params.get("from") || defaultFrom;
+  const to = params.get("to") || defaultTo;
+  const order = params.get("order") || "-total_amount";
+  const limit = Number(params.get("limit") || 50);
+  const offset = Number(params.get("offset") || 0);
+
+  const set = (patch: Record<string, string | number | undefined>) => {
+    const next = new URLSearchParams(params);
+    Object.entries(patch).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === "") next.delete(k);
+      else next.set(k, String(v));
+    });
+    setParams(next, { replace: true });
+  };
+
+  return { from, to, order, limit, offset, set };
 }
 
-function fmtMMSS(sec: number | null) {
-  if (sec === null || sec === undefined) return "—";
-  const s = Math.max(0, Math.round(sec));
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
-}
+export default function ReportsFinance() {
+  const { from, to, order, limit, offset, set } = useQueryDefaults();
 
-export default function ReportFinanceClose() {
-  const [rows, setRows] = useState<Row[]>([]);
-  const [from, setFrom] = useState<string>("");
-  const [to, setTo] = useState<string>("");
-  const [order, setOrder] = useState<"avg_asc" | "avg_desc" | "cnt_desc">("avg_asc");
-  const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [data, setData] = useState<ApiListResponse<FinanceRow> | null>(null);
 
-  async function load() {
-    setErr(null); setLoading(true);
-    try {
-      const qs = new URLSearchParams();
-      if (from) qs.set("frm", from);
-      if (to) qs.set("to", to);
-      qs.set("order", order);
-      qs.set("limit", "100"); // BE: ≤100
-      const data = await apiGet<Row[]>(`/reports/finance/close-time?${qs.toString()}`);
-      setRows(data);
-    } catch (e: any) {
-      setErr(e?.message || "Rapor alınamadı");
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
-  }
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setErr(null);
+    api
+      .get<ApiListResponse<FinanceRow>>(PATH, {
+        from,
+        to,
+        order,      // ör: "-total_amount" | "count"
+        limit,
+        offset,
+        tz: "Europe/Istanbul",
+      })
+      .then((resp) => {
+        if (!mounted) return;
+        setData(resp);
+      })
+      .catch((e) => {
+        if (!mounted) return;
+        setErr(e?.message || "Hata");
+      })
+      .finally(() => mounted && setLoading(false));
+    return () => {
+      mounted = false;
+    };
+  }, [from, to, order, limit, offset]);
 
-  useEffect(() => { load(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, []);
+  const columns: Column<FinanceRow>[] = [
+    { key: "employee_name", header: "Personel" },
+    { key: "employee_code", header: "Kod", width: 100 },
+    { key: "count", header: "İşlem", width: 90 },
+    {
+      key: "total_amount",
+      header: "Toplam Tutar",
+      render: (r) => formatTL(r.total_amount),
+    },
+    {
+      key: "avg_amount",
+      header: "Ø Tutar",
+      render: (r) => formatTL(r.avg_amount),
+    },
+    {
+      key: "approve_rate",
+      header: "Onay",
+      render: (r) => <b style={{ color: "#0a7" }}>{formatPercent(r.approve_rate)}</b>,
+    },
+    {
+      key: "reject_rate",
+      header: "Ret",
+      render: (r) => <b style={{ color: "#c33" }}>{formatPercent(r.reject_rate)}</b>,
+    },
+    ...(data?.rows?.some((r) => r.pending_count != null)
+      ? [
+          {
+            key: "pending_count",
+            header: "Bekleyen",
+            render: (r: FinanceRow) => (r.pending_count ?? "") as any,
+          } as Column<FinanceRow>,
+        ]
+      : []),
+  ];
 
-  // ----- STYLES -----
-  const container: React.CSSProperties = {
-    maxWidth: 1200, margin: "0 auto", padding: 12, display: "grid", gap: 12,
-  };
-  const card: React.CSSProperties = {
-    border: "1px solid #e9e9e9", borderRadius: 12, background: "#fff", overflow: "hidden",
-  };
-  const th: React.CSSProperties = {
-    position: "sticky", top: 0, background: "#fff", borderBottom: "1px solid #eee",
-    fontWeight: 600, fontSize: 13, padding: "6px 10px", textAlign: "left", whiteSpace: "nowrap",
-  };
-  const tdLeft: React.CSSProperties = {
-    padding: "6px 10px", fontSize: 13, textAlign: "left", verticalAlign: "middle",
-  };
-  const tdRight: React.CSSProperties = {
-    padding: "6px 10px", fontSize: 13, textAlign: "right", verticalAlign: "middle", whiteSpace: "nowrap",
-  };
-  const personCell: React.CSSProperties = { ...tdLeft, maxWidth: 280 };
-  const subNote: React.CSSProperties = { fontSize: 11, color: "#666" };
+  const rows = data?.rows || [];
+  const total = data?.total || 0;
+  const hasPrev = offset > 0;
+  const hasNext = offset + limit < total;
 
   return (
-    <div style={container}>
-      <h1 style={{ margin: 0, fontSize: 20 }}>Finans • Kapanış Performansı</h1>
-
-      {/* Filtre barı */}
-      <form onSubmit={(e)=>{e.preventDefault(); load();}} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <input type="date" value={from} onChange={(e)=>setFrom(e.target.value)} />
-        <input type="date" value={to} onChange={(e)=>setTo(e.target.value)} />
-        <select value={order} onChange={(e)=>setOrder(e.target.value as any)}>
-          <option value="avg_asc">Ø Sonuçlandırma (artan)</option>
-          <option value="avg_desc">Ø Sonuçlandırma (azalan)</option>
-          <option value="cnt_desc">İşlem Sayısı (çoktan aza)</option>
-        </select>
-        <button type="submit" disabled={loading}>{loading ? "Yükleniyor…" : "Listele"}</button>
-        {err && <span style={{ color: "#b00020", fontSize: 12 }}>{err}</span>}
-      </form>
-
-      {/* Bilgilendirme */}
-      <div style={{ fontSize: 12, color: "#666" }}>
-        Trend, <b>her zaman son 7 gün ekip ortalamasına</b> göre hesaplanır. Tarih seçimi yalnızca tablo satırlarını (kişisel metrikleri) sınırlar.
+    <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <strong>Aralık:</strong>
+        <span>
+          {from} → {to}
+        </span>
+        <div style={{ flex: 1 }} />
+        <ExportCSVButton filename={`finans-raporu_${from}_${to}`} rows={rows} />
       </div>
 
-      {/* Tablo */}
-      <div style={card}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th style={{ ...th, width: 360 }}>Personel</th>
-              <th style={{ ...th, width: 120, textAlign: "right" }}>İşlem Sayısı</th>
-              <th style={{ ...th, width: 160, textAlign: "right" }}>Ø İlk Yanıt (dk:ss)</th>
-              <th style={{ ...th, width: 180, textAlign: "right" }}>Ø Sonuçlandırma (dk:ss)</th>
-              <th style={{ ...th, width: 160 }}>Trend (Ekip 7G)</th>
-              <th style={{ ...th, width: 120 }}>Kişi</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={`${r.employee_id}-${i}`} style={{ borderTop: "1px solid #f5f5f5", background: i % 2 ? "#fafafa" : "#fff" }}>
-                <td style={personCell}>
-                  <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {r.full_name}
-                  </div>
-                  <div style={subNote}>
-                    {r.employee_id} • {r.department}
-                  </div>
-                </td>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "8px 0 12px" }}>
+        <label style={{ fontSize: 12, opacity: 0.7 }}>Sırala:</label>
+        <select
+          value={order}
+          onChange={(e) => set({ order: e.target.value, offset: 0 })}
+          style={{ padding: "6px 8px", border: "1px solid #ddd", borderRadius: 8 }}
+        >
+          <option value="-total_amount">Toplam Tutar (azalan)</option>
+          <option value="total_amount">Toplam Tutar (artan)</option>
+          <option value="-count">İşlem (azalan)</option>
+          <option value="count">İşlem (artan)</option>
+          <option value="-approve_rate">Onay (azalan)</option>
+          <option value="approve_rate">Onay (artan)</option>
+          <option value="-reject_rate">Ret (azalan)</option>
+          <option value="reject_rate">Ret (artan)</option>
+          <option value="-avg_amount">Ø Tutar (azalan)</option>
+          <option value="avg_amount">Ø Tutar (artan)</option>
+        </select>
 
-                <td style={tdRight}>{r.count_total}</td>
-                <td style={tdRight}>{r.avg_first_sec !== null ? fmtMMSS(r.avg_first_sec) : "—"}</td>
-                <td style={tdRight}>{fmtMMSS(r.avg_close_sec)}</td>
+        <label style={{ fontSize: 12, opacity: 0.7, marginLeft: 12 }}>Sayfa boyutu:</label>
+        <select
+          value={String(limit)}
+          onChange={(e) => set({ limit: Number(e.target.value), offset: 0 })}
+          style={{ padding: "6px 8px", border: "1px solid #ddd", borderRadius: 8 }}
+        >
+          {[25, 50, 100, 250].map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+      </div>
 
-                <td style={tdLeft}>
-                  <span style={{ marginRight: 6 }}>{r.trend.emoji}</span>
-                  <b>{r.trend.pct === null ? "—" : `${r.trend.pct > 0 ? "+" : ""}${r.trend.pct}%`}</b>
-                  <div style={subNote}>Ekip Ø: {fmtMMSS(r.trend.team_avg_close_sec)}</div>
-                </td>
+      {loading && <div>Yükleniyor…</div>}
+      {err && <div style={{ color: "#c33", marginBottom: 8 }}>Hata: {err}</div>}
 
-                <td style={tdLeft}>
-                  <Link to={`/employees/${encodeURIComponent(r.employee_id)}?tab=activity`}>Kişi sayfası</Link>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr><td colSpan={6} style={{ padding: 12, fontSize: 13, color: "#777" }}>Kayıt yok.</td></tr>
-            )}
-          </tbody>
-        </table>
+      <Table columns={columns} data={rows} />
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+        <button
+          disabled={!hasPrev}
+          onClick={() => hasPrev && set({ offset: Math.max(0, offset - limit) })}
+          style={navBtnStyle(!hasPrev)}
+        >
+          ◀ Önceki
+        </button>
+        <button
+          disabled={!hasNext}
+          onClick={() => hasNext && set({ offset: offset + limit })}
+          style={navBtnStyle(!hasNext)}
+        >
+          Sonraki ▶
+        </button>
+        <div style={{ marginLeft: 8, opacity: 0.7 }}>
+          Toplam: {total} • Gösterilen: {rows.length} • Offset: {offset}
+        </div>
       </div>
     </div>
   );
+}
+
+function navBtnStyle(disabled: boolean): React.CSSProperties {
+  return {
+    padding: "6px 10px",
+    border: "1px solid #ddd",
+    borderRadius: 8,
+    background: disabled ? "#f1f1f1" : "#f7f7f7",
+    cursor: disabled ? "default" : "pointer",
+  };
 }
