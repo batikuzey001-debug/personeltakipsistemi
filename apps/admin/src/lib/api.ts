@@ -1,107 +1,59 @@
 // apps/admin/src/lib/api.ts
-// Neden: API isteklerini tek yerden yönetmek, token eklemek.
-
-export type FinanceCloseRow = {
-  employee_id: string;
-  employee_name: string;
-  count: number;
-  avg_first_response_sec?: number | null;
-  avg_resolution_sec?: number | null;
-  trend_pct?: number | null;
-  profile_url?: string | null;
-};
-
-export type FinanceCloseReport = {
-  range_from: string; // ISO
-  range_to: string;   // ISO (exclusive)
-  total_records: number;
-  rows: FinanceCloseRow[];
-};
-
 const API_BASE =
-  import.meta.env.VITE_API_BASE ??
-  // Neden: Lokal geliştirme için yedek.
-  "https://personel-takip-api-production.up.railway.app";
+  (import.meta.env.VITE_API_BASE_URL as string) || "http://localhost:8000";
 
-function authHeaders() {
-  const token = localStorage.getItem("token");
-  if (!token) return {};
-  return { Authorization: `Bearer ${token}` };
-}
+type Meta = { from?: string; to?: string; generated_at?: string };
+export type ApiListResponse<T> = { rows: T[]; total: number; meta: Meta };
 
-export async function fetchFinanceCloseTime(params: {
-  frm?: string; // YYYY-MM-DD
-  to?: string;  // YYYY-MM-DD (exclusive)
-  order?:
-    | "cnt_desc"
-    | "cnt_asc"
-    | "first_asc"
-    | "first_desc"
-    | "res_asc"
-    | "res_desc"
-    | "name_asc"
-    | "name_desc";
-  limit?: number; // 1..500
-}): Promise<FinanceCloseReport> {
-  const qs = new URLSearchParams();
-  if (params.frm) qs.set("frm", params.frm);
-  if (params.to) qs.set("to", params.to);
-  if (params.order) qs.set("order", params.order);
-  if (params.limit) qs.set("limit", String(params.limit));
-
-  const res = await fetch(
-    `${API_BASE}/reports/finance/close-time?${qs.toString()}`,
-    { headers: { "Content-Type": "application/json", ...authHeaders() } }
-  );
-  if (!res.ok) {
-    // Neden: Eksik token / 422 / 500 hataları hızlı teşhis için.
-    const text = await res.text();
-    throw new Error(`Finance report failed (${res.status}): ${text}`);
+function buildQuery(params?: Record<string, unknown>) {
+  if (!params) return "";
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null) continue;
+    q.set(k, String(v));
   }
-  return (await res.json()) as FinanceCloseReport;
+  const s = q.toString();
+  return s ? `?${s}` : "";
 }
 
-export function secondsToHms(value?: number | null): string {
-  if (value == null || Number.isNaN(value)) return "—";
-  const sec = Math.max(0, Math.round(value));
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
+async function request<T>(
+  path: string,
+  params?: Record<string, unknown>,
+  init?: RequestInit
+): Promise<T> {
+  const token = localStorage.getItem("token") || "";
+  const controller = new AbortController();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
 
-export function downloadCsv(rows: FinanceCloseRow[], filename = "finance_report.csv") {
-  const header = [
-    "employee_id",
-    "employee_name",
-    "count",
-    "avg_first_response_sec",
-    "avg_resolution_sec",
-    "trend_pct",
-    "profile_url",
-  ];
-  const lines = [header.join(",")];
-  for (const r of rows) {
-    const vals = [
-      r.employee_id,
-      r.employee_name?.replaceAll(",", " "),
-      String(r.count ?? ""),
-      r.avg_first_response_sec != null ? String(Math.round(r.avg_first_response_sec)) : "",
-      r.avg_resolution_sec != null ? String(Math.round(r.avg_resolution_sec)) : "",
-      r.trend_pct != null ? String(r.trend_pct) : "",
-      r.profile_url ?? "",
-    ];
-    lines.push(vals.join(","));
+  const url = `${API_BASE}${path}${buildQuery(params)}`;
+  const r = await fetch(url, {
+    ...init,
+    headers: { ...headers, ...(init?.headers || {}) },
+    signal: controller.signal,
+  });
+  if (!r.ok) {
+    let msg = `${r.status} ${r.statusText}`;
+    try {
+      const t = await r.text();
+      if (t) msg = t;
+    } catch {}
+    throw new Error(msg);
   }
-  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  URL.revokeObjectURL(url);
-  a.remove();
+  // JSON parse hızlı olsun diye orjson varsa backend zaten application/json döner
+  return (await r.json()) as T;
 }
+
+export const api = {
+  get: <T>(path: string, params?: Record<string, unknown>) =>
+    request<T>(path, params, { method: "GET" }),
+  post: <T>(path: string, body?: unknown) =>
+    request<T>(path, undefined, {
+      method: "POST",
+      body: body ? JSON.stringify(body) : undefined,
+    }),
+};
+
+export { API_BASE };
